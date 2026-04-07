@@ -1,0 +1,5 @@
+# Test dependencies
+pytest>=7.0.0
+
+# Lint dependencies
+flake8>=6.0.0

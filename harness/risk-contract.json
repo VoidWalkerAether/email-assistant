@@ -1,0 +1,17 @@
+{
+  "version": "1",
+  "module": "email-assistant",
+  "riskTierRules": {
+    "high": ["src/sender.py", "src/harness/**"],
+    "medium": ["src/*.py"],
+    "low": ["**"]
+  },
+  "mergePolicy": {
+    "high": {
+      "requiredChecks": ["risk-policy-gate", "test", "lint"]
+    },
+    "low": {
+      "requiredChecks": ["risk-policy-gate", "test"]
+    }
+  }
+}

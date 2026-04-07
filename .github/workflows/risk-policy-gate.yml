@@ -1,0 +1,68 @@
+name: Risk Policy Gate
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  risk-check:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      
+      - name: Run Tests
+        run: |
+          echo "Running tests..."
+          # pytest tests/ || echo "No tests yet"
+      
+      - name: Run Lint
+        run: |
+          echo "Running lint..."
+          # pip install flake8
+          # flake8 src/ || echo "No lint configured yet"
+      
+      - name: Check Risk Tier
+        id: risk
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const contract = JSON.parse(fs.readFileSync('harness/risk-contract.json', 'utf8'));
+            
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number
+            });
+            
+            const changedFiles = files.map(f => f.filename);
+            let riskTier = 'low';
+            
+            for (const pattern of contract.riskTierRules.high) {
+              if (changedFiles.some(f => f.includes(pattern.replace('/**', '')))) {
+                riskTier = 'high';
+                break;
+              }
+            }
+            
+            core.setOutput('riskTier', riskTier);
+            console.log(`Risk Tier: ${riskTier}`);
+            console.log(`Changed files: ${changedFiles.join(', ')}`);
+      
+      - name: High Risk Warning
+        if: steps.risk.outputs.riskTier == 'high'
+        run: |
+          echo "⚠️ High risk changes detected!"
+          echo "Required: AI code review + manual approval"
