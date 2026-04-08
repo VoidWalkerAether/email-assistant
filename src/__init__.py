@@ -1,1 +1,7 @@
-# Email Assistant Package
+"""Email Assistant Package"""
+
+from .sender import send_email, validate_email
+
+__all__ = ["send_email", "validate_email"]
+
+__version__ = "0.1.0"
