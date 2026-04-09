@@ -227,7 +227,8 @@ def main():
             all_diagnostics.append(diagnostic)
     
     # 只输出纯 JSON 到 stdout（ReviewDog 需要）
-    print(json.dumps({"diagnostics": all_diagnostics}, indent=2))
+    # 不用 indent，输出单行 JSON
+    print(json.dumps({"diagnostics": all_diagnostics}))
 
 
 if __name__ == "__main__":
