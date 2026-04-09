@@ -35,8 +35,14 @@ jobs:
           GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           echo "🚀 Starting Claude AI Code Review..."
-          python3 scripts/qwen-review.py > claude-review-output.json 2>&1 || true
+          
+          # 只捕获 stdout（JSON），stderr 正常显示
+          python3 scripts/qwen-review.py > claude-review-output.json
+          
+          echo ""
+          echo "=== JSON Output for ReviewDog ==="
           cat claude-review-output.json
+          echo "================================="
       
       - name: Run ReviewDog
         env:
