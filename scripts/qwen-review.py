@@ -39,7 +39,9 @@ def read_file_content(filepath):
 def call_qwen_api(code_content, filename):
     """调用阿里云 Qwen API 进行代码审核"""
     api_key = os.environ.get('DASHSCOPE_API_KEY')
-    base_url = os.environ.get('DASHSCOPE_BASE_URL', 'https://coding.dashscope.aliyuncs.com/v1')
+    # 默认使用阿里云 DashScope，去掉协议前缀
+    base_url_raw = os.environ.get('DASHSCOPE_BASE_URL', 'dashscope.aliyuncs.com')
+    base_url = base_url_raw.replace('https://', '').replace('http://', '').split('/')[0]
     api_path = os.environ.get('DASHSCOPE_API_PATH', '/compatible-mode/v1/chat/completions')
     
     if not api_key:
@@ -124,7 +126,7 @@ def call_qwen_api(code_content, filename):
 
 
 def main():
-    """主函数 - 输出 RDJSON 格式"""
+    """主函数 - 输出 RDJSON 格式（纯 JSON 到 stdout，日志到 stderr）"""
     changed_files = get_changed_files()
     all_diagnostics = []
     
@@ -164,9 +166,8 @@ def main():
             }
             all_diagnostics.append(diagnostic)
     
-    # 输出 RDJSON 格式
+    # 只输出纯 JSON 到 stdout（ReviewDog 需要）
     print(json.dumps({"diagnostics": all_diagnostics}, indent=2))
-    print(f"✅ Review complete. Total issues: {len(all_diagnostics)}", file=sys.stderr)
 
 
 if __name__ == "__main__":
