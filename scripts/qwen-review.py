@@ -106,10 +106,29 @@ def call_qwen_api(code_content, filename):
         )
         
         response = conn.getresponse()
-        data = json.loads(response.read().decode())
+        response_data = response.read().decode()
+        data = json.loads(response_data)
         
-        # 解析 Qwen 返回的结果
-        content = data['choices'][0]['message']['content']
+        # 调试输出（到 stderr）
+        print(f"API Response keys: {list(data.keys())}", file=sys.stderr)
+        
+        # 阿里云 DashScope 返回格式（兼容 OpenAI 模式）
+        # 格式 1: OpenAI 兼容 {"choices": [{"message": {"content": "..."}}]}
+        # 格式 2: DashScope 原生 {"output": {"choices": [{"message": {"content": "..."}}]}}
+        content = None
+        try:
+            if 'choices' in data:
+                # OpenAI 兼容格式
+                content = data['choices'][0]['message']['content']
+            elif 'output' in data and 'choices' in data['output']:
+                # DashScope 原生格式
+                content = data['output']['choices'][0]['message']['content']
+            else:
+                print(f"Unexpected response format: {data}", file=sys.stderr)
+                return []
+        except (KeyError, IndexError) as e:
+            print(f"Error parsing response: {e}, data: {data}", file=sys.stderr)
+            return []
         
         # 提取 JSON（处理可能的 markdown 格式）
         json_match = re.search(r'\{.*\}', content, re.DOTALL)
