@@ -1,4 +1,4 @@
-name: Qwen AI Code Review
+name: Claude AI Code Review
 
 on:
   pull_request:
@@ -6,7 +6,7 @@ on:
     types: [opened, synchronize, reopened]
 
 jobs:
-  qwen-review:
+  claude-review:
     runs-on: ubuntu-latest
     
     steps:
@@ -23,18 +23,20 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          pip install claude-agent-sdk
       
-      - name: Run Qwen Code Review
+      - name: Run Claude Code Review
         env:
-          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
-          DASHSCOPE_BASE_URL: ${{ vars.DASHSCOPE_BASE_URL || 'https://coding.dashscope.aliyuncs.com/v1' }}
-          DASHSCOPE_API_PATH: ${{ vars.DASHSCOPE_API_PATH || '/compatible-mode/v1/chat/completions' }}
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL || 'https://coding.dashscope.aliyuncs.com/apps/anthropic' }}
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514' }}
+          ANTHROPIC_SMALL_FAST_MODEL: ${{ vars.ANTHROPIC_SMALL_FAST_MODEL || 'claude-3-haiku-20240307' }}
           GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          echo "🚀 Starting Qwen AI Code Review..."
-          python3 scripts/qwen-review.py > qwen-review-output.json 2>&1 || true
-          cat qwen-review-output.json
+          echo "🚀 Starting Claude AI Code Review..."
+          python3 scripts/qwen-review.py > claude-review-output.json 2>&1 || true
+          cat claude-review-output.json
       
       - name: Run ReviewDog
         env:
@@ -48,10 +50,10 @@ jobs:
           # 运行 reviewdog，使用 rdjson 格式
           ./bin/reviewdog \
             -f=rdjson \
-            -name="Qwen AI Review" \
+            -name="Claude AI Review" \
             -reporter=github-pr-review \
             -filter-mode=diff_context \
             -level=warning \
-            < qwen-review-output.json || true
+            < claude-review-output.json || true
         
         continue-on-error: true

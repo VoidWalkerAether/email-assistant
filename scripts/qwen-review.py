@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Qwen Code Review - 使用阿里云 Qwen 模型进行代码审核
+Claude Code Review - 使用阿里云代理的 Claude 模型进行代码审核
 输出格式：ReviewDog RDJSON (https://github.com/reviewdog/reviewdog/blob/master/proto/rdf/)
 """
 
@@ -9,7 +9,8 @@ import os
 import sys
 import subprocess
 import re
-from http.client import HTTPSConnection
+import asyncio
+from claude_agent_sdk import query, ClaudeAgentOptions, AssistantMessage, TextBlock
 
 
 def get_changed_files():
@@ -36,18 +37,19 @@ def read_file_content(filepath):
         return ""
 
 
-def call_qwen_api(code_content, filename):
-    """调用阿里云 Qwen API 进行代码审核"""
-    api_key = os.environ.get('DASHSCOPE_API_KEY')
-    # 默认使用阿里云 DashScope，去掉协议前缀
-    base_url_raw = os.environ.get('DASHSCOPE_BASE_URL', 'dashscope.aliyuncs.com')
-    base_url = base_url_raw.replace('https://', '').replace('http://', '').split('/')[0]
-    api_path = os.environ.get('DASHSCOPE_API_PATH', '/compatible-mode/v1/chat/completions')
+async def call_claude_async(code_content, filename):
+    """使用 Claude 进行代码审核（通过阿里云代理）"""
     
-    if not api_key:
-        print("Error: DASHSCOPE_API_KEY not set", file=sys.stderr)
+    # 环境变量配置
+    auth_token = os.environ.get('ANTHROPIC_AUTH_TOKEN')
+    base_url = os.environ.get('ANTHROPIC_BASE_URL', 'https://coding.dashscope.aliyuncs.com/apps/anthropic')
+    model = os.environ.get('ANTHROPIC_MODEL', 'claude-sonnet-4-20250514')
+    small_model = os.environ.get('ANTHROPIC_SMALL_FAST_MODEL', 'claude-3-haiku-20240307')
+    
+    if not auth_token:
+        print("Error: ANTHROPIC_AUTH_TOKEN not set", file=sys.stderr)
         return []
-    
+
     # 构建提示词
     prompt = f"""请审查以下代码，找出潜在问题：
 - 代码风格和最佳实践
@@ -76,72 +78,36 @@ def call_qwen_api(code_content, filename):
 如果没有问题，返回 {{"issues": []}}。
 只返回 JSON，不要其他内容。"""
 
-    # 调用 Qwen API（OpenAI 兼容格式）
-    request_body = json.dumps({
-        "model": "qwen-plus",
-        "messages": [
-            {
-                "role": "system",
-                "content": "你是一个专业的代码审查助手，擅长发现代码中的问题和改进建议。请用中文回复。"
-            },
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ],
-        "temperature": 0.3,
-        "max_tokens": 2000
-    })
-    
+    options = ClaudeAgentOptions(
+        system_prompt="你是一个专业的代码审查助手，擅长发现代码中的问题和改进建议。请用中文回复。",
+        max_turns=1,
+        model=model
+    )
+
     try:
-        conn = HTTPSConnection(base_url, timeout=30)
-        conn.request(
-            "POST",
-            api_path,
-            body=request_body,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}"
-            }
-        )
-        
-        response = conn.getresponse()
-        response_data = response.read().decode()
-        data = json.loads(response_data)
-        
-        # 调试输出（到 stderr）
-        print(f"API Response keys: {list(data.keys())}", file=sys.stderr)
-        
-        # 阿里云 DashScope 返回格式（兼容 OpenAI 模式）
-        # 格式 1: OpenAI 兼容 {"choices": [{"message": {"content": "..."}}]}
-        # 格式 2: DashScope 原生 {"output": {"choices": [{"message": {"content": "..."}}]}}
-        content = None
-        try:
-            if 'choices' in data:
-                # OpenAI 兼容格式
-                content = data['choices'][0]['message']['content']
-            elif 'output' in data and 'choices' in data['output']:
-                # DashScope 原生格式
-                content = data['output']['choices'][0]['message']['content']
-            else:
-                print(f"Unexpected response format: {data}", file=sys.stderr)
-                return []
-        except (KeyError, IndexError) as e:
-            print(f"Error parsing response: {e}, data: {data}", file=sys.stderr)
-            return []
-        
+        full_response = ""
+        async for message in query(prompt=prompt, options=options):
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        full_response += block.text
+
         # 提取 JSON（处理可能的 markdown 格式）
-        json_match = re.search(r'\{.*\}', content, re.DOTALL)
+        json_match = re.search(r'\{.*\}', full_response, re.DOTALL)
         if json_match:
             result = json.loads(json_match.group())
             return result.get('issues', [])
         else:
-            print(f"Failed to parse JSON from response: {content}", file=sys.stderr)
+            print(f"Failed to parse JSON from response: {full_response}", file=sys.stderr)
             return []
-            
     except Exception as e:
-        print(f"Error calling Qwen API: {e}", file=sys.stderr)
+        print(f"Error calling Claude API: {e}", file=sys.stderr)
         return []
+
+
+def call_claude_api(code_content, filename):
+    """调用 Claude API 进行代码审核（包装异步函数）"""
+    return asyncio.run(call_claude_async(code_content, filename))
 
 
 def main():
@@ -161,7 +127,7 @@ def main():
             continue
         
         print(f"📝 Reviewing {filepath}...", file=sys.stderr)
-        issues = call_qwen_api(content, filepath)
+        issues = call_claude_api(content, filepath)
         print(f"   Found {len(issues)} issues", file=sys.stderr)
         
         for issue in issues:
