@@ -1,0 +1,55 @@
+name: Qwen AI Code Review
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+jobs:
+  qwen-review:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+      
+      - name: Run Qwen Code Review
+        env:
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          echo "🚀 Starting Qwen AI Code Review..."
+          python3 scripts/qwen-review.py > qwen-review-output.json 2>&1 || true
+          cat qwen-review-output.json
+      
+      - name: Run ReviewDog
+        env:
+          REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "🐶 Running ReviewDog..."
+          
+          # 下载 reviewdog
+          curl -sfL https://raw.githubusercontent.com/reviewdog/reviewdog/master/install.sh | sh -s -- -b ./bin/ latest
+          
+          # 运行 reviewdog，使用 rdjson 格式
+          ./bin/reviewdog \
+            -f=rdjson \
+            -name="Qwen AI Review" \
+            -reporter=github-pr-review \
+            -filter-mode=diff_context \
+            -level=warning \
+            < qwen-review-output.json || true
+        
+        continue-on-error: true
