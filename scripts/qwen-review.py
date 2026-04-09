@@ -39,6 +39,8 @@ def read_file_content(filepath):
 def call_qwen_api(code_content, filename):
     """调用阿里云 Qwen API 进行代码审核"""
     api_key = os.environ.get('DASHSCOPE_API_KEY')
+    base_url = os.environ.get('DASHSCOPE_BASE_URL', 'dashscope.aliyuncs.com')
+    api_path = os.environ.get('DASHSCOPE_API_PATH', '/compatible-mode/v1/chat/completions')
     
     if not api_key:
         print("Error: DASHSCOPE_API_KEY not set", file=sys.stderr)
@@ -90,10 +92,10 @@ def call_qwen_api(code_content, filename):
     })
     
     try:
-        conn = HTTPSConnection("dashscope.aliyuncs.com", timeout=30)
+        conn = HTTPSConnection(base_url, timeout=30)
         conn.request(
             "POST",
-            "/compatible-mode/v1/chat/completions",
+            api_path,
             body=request_body,
             headers={
                 "Content-Type": "application/json",
