@@ -36,3 +36,6 @@ if __name__ == "__main__":
     print(validate_email("test@example.com"))  # True
     print(validate_email("invalid"))  # False
     print(send_email("test@example.com", "Hello", "World"))  # True
+
+# High Risk Test - 2026-04-09
+# 这行代码用于测试 High Risk 阻止功能
