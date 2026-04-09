@@ -39,7 +39,7 @@ def read_file_content(filepath):
 def call_qwen_api(code_content, filename):
     """调用阿里云 Qwen API 进行代码审核"""
     api_key = os.environ.get('DASHSCOPE_API_KEY')
-    base_url = os.environ.get('DASHSCOPE_BASE_URL', 'dashscope.aliyuncs.com')
+    base_url = os.environ.get('DASHSCOPE_BASE_URL', 'https://coding.dashscope.aliyuncs.com/v1')
     api_path = os.environ.get('DASHSCOPE_API_PATH', '/compatible-mode/v1/chat/completions')
     
     if not api_key:
