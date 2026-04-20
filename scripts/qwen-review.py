@@ -207,9 +207,7 @@ def main():
         
         for issue in issues:
             diagnostic = {
-                "message": {
-                    "text": issue.get('message', 'Unknown issue')
-                },
+                "message": issue.get('message', 'Unknown issue'),
                 "location": {
                     "path": filepath,
                     "range": {
