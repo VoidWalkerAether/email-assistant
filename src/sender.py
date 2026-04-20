@@ -4,12 +4,12 @@
 def send_email(to: str, subject: str, body: str) -> bool:
     """
     Send an email.
-    
+
     Args:
         to: Recipient email address
         subject: Email subject
         body: Email body content
-    
+
     Returns:
         True if sent successfully
     """
@@ -21,10 +21,10 @@ def send_email(to: str, subject: str, body: str) -> bool:
 def validate_email(email: str) -> bool:
     """
     Validate email format.
-    
+
     Args:
         email: Email address to validate
-    
+
     Returns:
         True if valid format
     """
