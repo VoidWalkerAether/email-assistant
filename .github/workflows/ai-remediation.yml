@@ -108,7 +108,8 @@ jobs:
         run: |
           echo "🤖 Running AI Auto-Fix for PR #${{ github.event.inputs.pr_number }}..."
           echo "Review comments: $REVIEW_COMMENTS"
-          python3 scripts/auto-fix.py > auto-fix-result.json 2>&1 || echo '{"success": false, "error": "Script failed"}' > auto-fix-result.json
+          # 只捕获 stdout 到 JSON 文件，stderr 正常显示
+          python3 scripts/auto-fix.py > auto-fix-result.json || echo '{"success": false, "error": "Script failed"}' > auto-fix-result.json
           echo "=== Auto-fix output ==="
           cat auto-fix-result.json
           echo "======================="

@@ -17,7 +17,7 @@ def get_pr_info():
     return {
         "owner": os.environ.get("GITHUB_REPOSITORY_OWNER"),
         "repo": os.environ.get("GITHUB_REPOSITORY", "").split("/")[1],
-        "pr_number": os.environ.get("GITHUB_EVENT_NUMBER"),
+        "pr_number": os.environ.get("PR_NUMBER") or os.environ.get("GITHUB_EVENT_NUMBER"),
         "sha": os.environ.get("GITHUB_SHA", "HEAD"),
     }
 
@@ -59,6 +59,7 @@ def get_review_comments():
     try:
         comments = json.loads(comments_json)
         print(f"[INFO] Found {len(comments)} review comments", file=sys.stderr)
+        print(f"[DEBUG] Comments: {comments_json[:200]}...", file=sys.stderr)
         return comments
     except json.JSONDecodeError as e:
         print(f"[ERROR] Failed to parse REVIEW_COMMENTS: {e}", file=sys.stderr)
