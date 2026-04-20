@@ -1,0 +1,161 @@
+name: AI Auto-Remediation
+
+on:
+  # 手动触发（推荐方式，避免无限循环）
+  workflow_dispatch:
+    inputs:
+      max_files:
+        description: 'Maximum files to fix (default: 3)'
+        required: false
+        default: '3'
+  
+  # 或者：PR 评论触发（需要特定关键词）
+  # issue_comment:
+  #   types: [created]
+
+permissions:
+  pull-requests: write
+  contents: write
+
+jobs:
+  auto-fix:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install claude-agent-sdk
+      
+      - name: Configure Git for Auto-Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      
+      - name: Get PR Review Comments
+        id: get-comments
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number || context.payload.inputs.pr_number
+            });
+            
+            // 过滤 qwen-review 的评论
+            const reviewComments = comments
+              .filter(c => c.user.login === 'github-actions[bot]')
+              .filter(c => c.body.includes('[qwen-review]'))
+              .map(c => {
+                // 解析评论中的 location 信息
+                const locationMatch = c.body.match(/location:\{path:"([^"]+)" range:\{start:\{line:(\d+)/);
+                const messageMatch = c.body.match(/message:"([^"]+)"/);
+                
+                if (locationMatch && messageMatch) {
+                  return {
+                    location: {
+                      path: locationMatch[1],
+                      range: { start: { line: parseInt(locationMatch[2]) } }
+                    },
+                    message: messageMatch[1],
+                    severity: 'warning'
+                  };
+                }
+                return null;
+              })
+              .filter(c => c !== null);
+            
+            console.log(`Found ${reviewComments.length} review comments`);
+            core.setOutput('comments', JSON.stringify(reviewComments));
+            core.setOutput('count', reviewComments.length);
+      
+      - name: Run AI Auto-Fix
+        id: auto-fix
+        env:
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL || 'https://coding.dashscope.aliyuncs.com/apps/anthropic' }}
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'qwen3-coder-plus' }}
+          REVIEW_COMMENTS: ${{ steps.get-comments.outputs.comments }}
+          MAX_FIX_FILES: ${{ github.event.inputs.max_files || '3' }}
+          GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          echo "🤖 Running AI Auto-Fix..."
+          python3 scripts/auto-fix.py > auto-fix-result.json
+          cat auto-fix-result.json
+      
+      - name: Check if Fixes Applied
+        id: check-fixes
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const result = JSON.parse(fs.readFileSync('auto-fix-result.json', 'utf8'));
+            
+            if (result.success && result.fixed_files.length > 0) {
+              console.log(`✅ AI fixed ${result.fixed_files.length} file(s): ${result.fixed_files.join(', ')}`);
+              core.setOutput('has-fixes', 'true');
+              core.setOutput('fixed-files', result.fixed_files.join(', '));
+            } else {
+              console.log('ℹ️ No fixes applied');
+              core.setOutput('has-fixes', 'false');
+            }
+      
+      - name: Commit and Push Fixes
+        if: steps.check-fixes.outputs.has-fixes == 'true'
+        run: |
+          echo "📝 Committing fixes..."
+          
+          git add -A
+          
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          
+          git commit -m "🤖 AI auto-fix: ${{ steps.check-fixes.outputs.fixed-files }}"
+          
+          echo "🚀 Pushing fixes to PR..."
+          git push origin HEAD:${{ github.head_ref }}
+          
+          echo "✅ Fixes pushed successfully!"
+      
+      - name: Add Comment to PR
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            let comment = '';
+            
+            if (context.steps.check-fixes?.outputs?.has-fixes === 'true') {
+              const fixedFiles = context.steps.check-fixes.outputs.fixed_files;
+              comment = `## 🤖 AI Auto-Fix Complete\n\n✅ Successfully fixed **${fixedFiles}**\n\nThe fixes have been pushed to this PR. Workflow will re-run automatically.`;
+            } else {
+              const commentCount = context.steps.get-comments?.outputs?.count || 0;
+              if (commentCount === 0) {
+                comment = `## ℹ️ AI Auto-Fix Skipped\n\nNo review comments found to fix.`;
+              } else {
+                comment = `## ⚠️ AI Auto-Fix Failed\n\nAI was unable to automatically fix the identified issues. Please review and fix manually.`;
+              }
+            }
+            
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: comment
+            });

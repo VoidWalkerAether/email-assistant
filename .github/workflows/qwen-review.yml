@@ -7,7 +7,7 @@ on:
 
 permissions:
   pull-requests: write
-  contents: read
+  contents: write  # 允许自动修复时 push 代码
 
 jobs:
   claude-review:
