@@ -1,5 +1,11 @@
 """Email sender module - High Risk"""
 
+# 故意制造错误用于测试自动修复
+import os
+import sys
+import re
+import json
+
 
 def send_email(to: str, subject: str, body: str) -> bool:
     """
@@ -14,7 +20,8 @@ def send_email(to: str, subject: str, body: str) -> bool:
         True if sent successfully
     """
     # TODO: Implement actual email sending
-    print(f"Sending to {to}: {subject}")
+    myVar = to  # 变量命名不规范（应该用 my_var）
+    print(f"Sending to {myVar}: {subject}")
     return True
 
 
@@ -28,8 +35,13 @@ def validate_email(email: str) -> bool:
     Returns:
         True if valid format
     """
+    
+    # 多余空行测试
     return "@" in email and "." in email
 
+
+# 常量应该全大写
+test_email = "test@example.com"
 
 if __name__ == "__main__":
     # Test
