@@ -174,6 +174,7 @@ def apply_fix(filepath, fixed_content):
 
 def main():
     """主函数"""
+    # 所有日志输出到 stderr，只有 JSON 输出到 stdout
     print("[INFO] 🚀 Starting AI Auto-Fix...", file=sys.stderr)
     
     # 获取 PR 信息
@@ -184,6 +185,14 @@ def main():
     comments = get_review_comments()
     if not comments:
         print("[INFO] No review comments to fix, exiting.", file=sys.stderr)
+        # 输出空 JSON（而不是直接退出）
+        result = {
+            "fixed_files": [],
+            "total_files": 0,
+            "success": False,
+            "reason": "No review comments found"
+        }
+        print(json.dumps(result))
         return 0
     
     # 按文件分组问题
