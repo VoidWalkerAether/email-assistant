@@ -1,0 +1,69 @@
+name: Claude AI Code Review
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  claude-review:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install claude-agent-sdk
+      
+      - name: Run Claude Code Review
+        env:
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL || 'https://coding.dashscope.aliyuncs.com/apps/anthropic' }}
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'qwen3-coder-plus' }}
+          ANTHROPIC_SMALL_FAST_MODEL: ${{ vars.ANTHROPIC_SMALL_FAST_MODEL || 'qwen3-coder-plus' }}
+          GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          echo "🚀 Starting Claude AI Code Review..."
+          
+          # 只捕获 stdout（JSON），stderr 正常显示
+          python3 scripts/qwen-review.py > claude-review-output.json
+          
+          echo ""
+          echo "=== JSON Output for ReviewDog ==="
+          cat claude-review-output.json
+          echo "================================="
+      
+      - name: Run ReviewDog
+        env:
+          REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "🐶 Running ReviewDog..."
+          
+          # 下载 reviewdog
+          curl -sfL https://raw.githubusercontent.com/reviewdog/reviewdog/master/install.sh | sh -s -- -b ./bin/ latest
+          
+          # 运行 reviewdog，使用 rdjson 格式
+          ./bin/reviewdog \
+            -f=rdjson \
+            -name="Claude AI Review" \
+            -reporter=github-pr-review \
+            -filter-mode=diff_context \
+            -level=warning \
+            < claude-review-output.json || true
+        
+        continue-on-error: true
