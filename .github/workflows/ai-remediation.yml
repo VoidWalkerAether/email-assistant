@@ -97,6 +97,7 @@ jobs:
       
       - name: Run AI Auto-Fix
         id: auto-fix
+        continue-on-error: true
         env:
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
           ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL || 'https://coding.dashscope.aliyuncs.com/apps/anthropic' }}
@@ -106,8 +107,11 @@ jobs:
           PR_NUMBER: ${{ github.event.inputs.pr_number }}
         run: |
           echo "🤖 Running AI Auto-Fix for PR #${{ github.event.inputs.pr_number }}..."
-          python3 scripts/auto-fix.py > auto-fix-result.json
+          echo "Review comments: $REVIEW_COMMENTS"
+          python3 scripts/auto-fix.py > auto-fix-result.json 2>&1 || echo '{"success": false, "error": "Script failed"}' > auto-fix-result.json
+          echo "=== Auto-fix output ==="
           cat auto-fix-result.json
+          echo "======================="
       
       - name: Check if Fixes Applied
         id: check-fixes
@@ -115,14 +119,29 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const result = JSON.parse(fs.readFileSync('auto-fix-result.json', 'utf8'));
             
-            if (result.success && result.fixed_files.length > 0) {
-              console.log(`✅ AI fixed ${result.fixed_files.length} file(s): ${result.fixed_files.join(', ')}`);
-              core.setOutput('has-fixes', 'true');
-              core.setOutput('fixed-files', result.fixed_files.join(', '));
-            } else {
-              console.log('ℹ️ No fixes applied');
+            try {
+              const content = fs.readFileSync('auto-fix-result.json', 'utf8').trim();
+              console.log('Raw output:', content);
+              
+              if (!content) {
+                console.log('Empty output file');
+                core.setOutput('has-fixes', 'false');
+                return;
+              }
+              
+              const result = JSON.parse(content);
+              
+              if (result.success && result.fixed_files && result.fixed_files.length > 0) {
+                console.log(`✅ AI fixed ${result.fixed_files.length} file(s): ${result.fixed_files.join(', ')}`);
+                core.setOutput('has-fixes', 'true');
+                core.setOutput('fixed-files', result.fixed_files.join(', '));
+              } else {
+                console.log('ℹ️ No fixes applied');
+                core.setOutput('has-fixes', 'false');
+              }
+            } catch (e) {
+              console.log('Error parsing result:', e.message);
               core.setOutput('has-fixes', 'false');
             }
       
