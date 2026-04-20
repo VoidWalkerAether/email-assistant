@@ -32,7 +32,7 @@ jobs:
         run: |
           echo "🔍 Running lint..."
           pip install flake8
-          flake8 src/ --exit-zero || echo "⚠️ Lint warnings found"
+          flake8 src/ --max-line-length=100
       
       - name: Check Risk Tier
         id: risk
