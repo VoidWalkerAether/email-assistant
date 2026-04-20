@@ -4,6 +4,10 @@ on:
   # 手动触发（推荐方式，避免无限循环）
   workflow_dispatch:
     inputs:
+      pr_number:
+        description: 'Pull Request number to fix'
+        required: true
+        default: ''
       max_files:
         description: 'Maximum files to fix (default: 3)'
         required: false
@@ -48,10 +52,20 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
+            // 获取 PR 号：从输入参数或 github.head_ref
+            const prNumber = context.payload.inputs.pr_number || process.env.PR_NUMBER;
+            
+            if (!prNumber) {
+              core.setFailed('PR number is required. Please provide it in workflow_dispatch inputs.');
+              return;
+            }
+            
+            console.log(`Fetching comments for PR #${prNumber}`);
+            
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.issue.number || context.payload.inputs.pr_number
+              issue_number: parseInt(prNumber)
             });
             
             // 过滤 qwen-review 的评论
@@ -89,10 +103,9 @@ jobs:
           ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'qwen3-coder-plus' }}
           REVIEW_COMMENTS: ${{ steps.get-comments.outputs.comments }}
           MAX_FIX_FILES: ${{ github.event.inputs.max_files || '3' }}
-          GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number }}
         run: |
-          echo "🤖 Running AI Auto-Fix..."
+          echo "🤖 Running AI Auto-Fix for PR #${{ github.event.inputs.pr_number }}..."
           python3 scripts/auto-fix.py > auto-fix-result.json
           cat auto-fix-result.json
       
@@ -135,17 +148,23 @@ jobs:
       - name: Add Comment to PR
         if: always()
         uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ github.event.inputs.pr_number }}
+          HAS_FIXES: ${{ steps.check-fixes.outputs.has-fixes }}
+          FIXED_FILES: ${{ steps.check-fixes.outputs.fixed-files }}
+          COMMENT_COUNT: ${{ steps.get-comments.outputs.count }}
         with:
           script: |
-            const fs = require('fs');
+            const prNumber = process.env.PR_NUMBER || context.payload.inputs.pr_number;
+            const hasFixes = process.env.HAS_FIXES === 'true';
+            const fixedFiles = process.env.FIXED_FILES || '';
+            const commentCount = parseInt(process.env.COMMENT_COUNT || '0');
             
             let comment = '';
             
-            if (context.steps.check-fixes?.outputs?.has-fixes === 'true') {
-              const fixedFiles = context.steps.check-fixes.outputs.fixed_files;
+            if (hasFixes) {
               comment = `## 🤖 AI Auto-Fix Complete\n\n✅ Successfully fixed **${fixedFiles}**\n\nThe fixes have been pushed to this PR. Workflow will re-run automatically.`;
             } else {
-              const commentCount = context.steps.get-comments?.outputs?.count || 0;
               if (commentCount === 0) {
                 comment = `## ℹ️ AI Auto-Fix Skipped\n\nNo review comments found to fix.`;
               } else {
@@ -153,9 +172,13 @@ jobs:
               }
             }
             
-            github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: comment
-            });
+            if (prNumber) {
+              github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: parseInt(prNumber),
+                body: comment
+              });
+            } else {
+              console.log('No PR number, skipping comment');
+            }
