@@ -1,7 +1,14 @@
 name: AI Auto-Remediation
 
 on:
-  # 手动触发（推荐方式，避免无限循环）
+  # ✅ 自动触发：AI Review 完成后自动开始修复
+  workflow_run:
+    workflows: ["Claude AI Code Review"]
+    types:
+      - completed
+    # ✅ 移除 branches 限制，让所有 PR 分支都能触发
+  
+  # 手动触发（调试用）
   workflow_dispatch:
     inputs:
       pr_number:
@@ -12,10 +19,6 @@ on:
         description: 'Maximum files to fix (default: 3)'
         required: false
         default: '3'
-  
-  # 或者：PR 评论触发（需要特定关键词）
-  # issue_comment:
-  #   types: [created]
 
 permissions:
   pull-requests: write
@@ -47,18 +50,68 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
       
-      - name: Get PR Review Comments
-        id: get-comments
+      - name: Get PR Number (Auto or Manual)
+        id: get-pr-number
         uses: actions/github-script@v7
         with:
           script: |
-            // 获取 PR 号：从输入参数
-            const prNumber = context.payload.inputs.pr_number;
+            let prNumber = null;
+            let headSha = null;
             
-            if (!prNumber) {
-              core.setFailed('PR number is required. Please provide it in workflow_dispatch inputs.');
-              return;
+            // ✅ 支持 workflow_run 自动触发
+            if (context.eventName === 'workflow_run') {
+              const workflowName = context.payload.workflow_run.name;
+              const conclusion = context.payload.workflow_run.conclusion;
+              const headSha = context.payload.workflow_run.head_sha;
+              
+              console.log(`Triggered by workflow_run: ${workflowName} (${conclusion})`);
+              console.log(`Head SHA: ${headSha}`);
+              
+              // 只处理成功的 review
+              if (conclusion !== 'success') {
+                console.log(`Skipping: workflow conclusion is ${conclusion}`);
+                core.setOutput('skip', 'true');
+                return;
+              }
+              
+              // 从 workflow_run 获取 PR 号
+              const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                commit_sha: headSha
+              });
+              
+              if (prs.length === 0) {
+                console.log('No PR found for this commit');
+                core.setOutput('skip', 'true');
+                return;
+              }
+              
+              prNumber = prs[0].number;
+              console.log(`Found PR #${prNumber}`);
             }
+            // ✅ 支持 workflow_dispatch 手动触发
+            else if (context.eventName === 'workflow_dispatch') {
+              prNumber = context.payload.inputs.pr_number;
+              if (!prNumber) {
+                core.setFailed('PR number is required');
+                return;
+              }
+              console.log(`Manual trigger for PR #${prNumber}`);
+            }
+            
+            core.setOutput('pr_number', prNumber);
+            core.setOutput('skip', 'false');
+      
+      - name: Get PR Review Comments
+        id: get-comments
+        if: steps.get-pr-number.outputs.skip != 'true'
+        env:
+          PR_NUMBER: ${{ steps.get-pr-number.outputs.pr_number }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = parseInt(process.env.PR_NUMBER);
             
             console.log(`Fetching review comments for PR #${prNumber}`);
             
@@ -104,18 +157,52 @@ jobs:
             core.setOutput('comments', JSON.stringify(reviewComments));
             core.setOutput('count', reviewComments.length);
       
+      - name: Check if Review Found Issues
+        id: check-issues
+        if: steps.get-pr-number.outputs.skip != 'true'
+        env:
+          COMMENT_COUNT: ${{ steps.get-comments.outputs.count }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const count = parseInt(process.env.COMMENT_COUNT || '0');
+            
+            if (count === 0) {
+              console.log('✅ No review issues found, skipping auto-fix');
+              core.setOutput('skip', 'true');
+            } else {
+              console.log(`🐛 Found ${count} issues to fix`);
+              core.setOutput('skip', 'false');
+            }
+      
+      - name: Add Comment (No Issues)
+        if: steps.check-issues.outputs.skip == 'true' && steps.get-pr-number.outputs.skip != 'true'
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ steps.get-pr-number.outputs.pr_number }}
+        with:
+          script: |
+            const prNumber = parseInt(process.env.PR_NUMBER);
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: '## ✅ AI Review Complete\\n\\nNo issues found. Great job! 🎉'
+            });
+      
       - name: Run AI Auto-Fix
+        if: steps.check-issues.outputs.skip != 'true'
         id: auto-fix
         continue-on-error: true
         env:
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
           ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL || 'https://coding.dashscope.aliyuncs.com/apps/anthropic' }}
-          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'qwen3-coder-plus' }}
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'qwen3.5-plus' }}
           REVIEW_COMMENTS: ${{ steps.get-comments.outputs.comments }}
           MAX_FIX_FILES: ${{ github.event.inputs.max_files || '3' }}
-          PR_NUMBER: ${{ github.event.inputs.pr_number }}
+          PR_NUMBER: ${{ steps.get-pr-number.outputs.pr_number }}
         run: |
-          echo "🤖 Running AI Auto-Fix for PR #${{ github.event.inputs.pr_number }}..."
+          echo "🤖 Running AI Auto-Fix for PR #${{ steps.get-pr-number.outputs.pr_number }}..."
           echo "Review comments count: ${{ steps.get-comments.outputs.count }}"
           # 只捕获 stdout 到 JSON 文件，stderr 正常显示
           python3 scripts/auto-fix.py > auto-fix-result.json || echo '{"success": false, "error": "Script failed"}' > auto-fix-result.json
@@ -155,10 +242,10 @@ jobs:
               core.setOutput('has-fixes', 'false');
             }
       
-      # ✅ 修复：先获取 PR 分支名（workflow_dispatch 时 github.head_ref 为空）
+      # ✅ 获取 PR 分支名（workflow_dispatch 时 github.head_ref 为空）
       - name: Get PR Branch Name
         id: get-branch
-        if: steps.check-fixes.outputs.has-fixes == 'true'
+        if: steps.check-fixes.outputs.has-fixes == 'true' && steps.get-pr-number.outputs.skip != 'true'
         uses: actions/github-script@v7
         with:
           script: |
@@ -203,13 +290,17 @@ jobs:
         if: always()
         uses: actions/github-script@v7
         env:
-          PR_NUMBER: ${{ github.event.inputs.pr_number }}
+          PR_NUMBER: ${{ steps.get-pr-number.outputs.pr_number }}
           HAS_FIXES: ${{ steps.check-fixes.outputs.has-fixes }}
           FIXED_FILES: ${{ steps.check-fixes.outputs.fixed-files }}
           COMMENT_COUNT: ${{ steps.get-comments.outputs.count }}
         with:
           script: |
-            const prNumber = process.env.PR_NUMBER || context.payload.inputs.pr_number;
+            const prNumber = parseInt(process.env.PR_NUMBER);
+            if (!prNumber) {
+              console.log('No PR number, skipping comment');
+              return;
+            }
             const hasFixes = process.env.HAS_FIXES === 'true';
             const fixedFiles = process.env.FIXED_FILES || '';
             const commentCount = parseInt(process.env.COMMENT_COUNT || '0');

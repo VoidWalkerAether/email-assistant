@@ -5,6 +5,8 @@ This module handles sending emails and validating email addresses.
 """
 
 import os
+import sys
+import json
 
 
 def send_email(to: str, subject: str, body: str) -> bool:
@@ -20,8 +22,7 @@ def send_email(to: str, subject: str, body: str) -> bool:
         True if sent successfully
     """
     # TODO: Implement actual email sending
-    my_var = to  # Fixed variable naming convention
-    print(f"Sending to {my_var}: {subject}")
+    print(f"Sending to {to}: {subject}")
     return True
 
 
@@ -35,7 +36,7 @@ def validate_email(email: str) -> bool:
     Returns:
         True if valid format
     """
-    import re  # Import only when needed
+    import re
     pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return bool(re.match(pattern, email))
 
