@@ -20,29 +20,41 @@ jobs:
             const prNumber = context.issue.number;
             const headSha = context.payload.pull_request.head.sha;
 
-            // Find the latest review-status comment from github-actions[bot]
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: prNumber,
-              per_page: 100
-            });
-
+            // Poll for review marker with retries (review workflow may still be running)
+            const maxRetries = 18;      // 3 minutes max (10s interval)
+            const intervalMs = 10000;   // 10 seconds
             let latestMarkerSha = null;
-            for (const c of comments) {
-              if (c.user.login === 'github-actions[bot]'
-                  && c.body.includes('<!-- review-status -->')) {
-                const match = c.body.match(/sha:([a-f0-9]+)/);
-                if (match) {
-                  latestMarkerSha = match[1];
-                  break;
+
+            for (let attempt = 0; attempt < maxRetries; attempt++) {
+              const { data: comments } = await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                per_page: 100
+              });
+
+              for (const c of comments) {
+                if (c.user.login === 'github-actions[bot]'
+                    && c.body.includes('<!-- review-status -->')) {
+                  const match = c.body.match(/sha:([a-f0-9]+)/);
+                  if (match) {
+                    latestMarkerSha = match[1];
+                    break;
+                  }
                 }
               }
+
+              if (latestMarkerSha) {
+                break;
+              }
+
+              console.log(`Marker not found, retry ${attempt + 1}/${maxRetries}...`);
+              await new Promise(r => setTimeout(r, intervalMs));
             }
 
             if (!latestMarkerSha) {
               core.setFailed(
-                'SHA Discipline: No AI review marker found. Run the Claude AI Code Review workflow first.'
+                'SHA Discipline: AI review did not complete within 3 minutes. Check the Claude AI Code Review workflow.'
               );
             } else if (latestMarkerSha !== headSha) {
               core.setFailed(
