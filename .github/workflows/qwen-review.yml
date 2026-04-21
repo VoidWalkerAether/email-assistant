@@ -66,4 +66,36 @@ jobs:
             -level=warning \
             < claude-review-output.json || true
         
-        continue-on-error: true
+      - name: Post Review Status
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const headSha = context.payload.pull_request.head.sha;
+
+            // Delete any previous review status comment from this bot
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber
+            });
+
+            for (const c of comments) {
+              if (c.user.login === 'github-actions[bot]'
+                  && c.body.includes('<!-- review-status -->')) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: c.id
+                });
+              }
+            }
+
+            // Post fresh review status comment with SHA marker
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: `## AI Review Complete\n\n<!-- review-status --> sha:${headSha}`
+            });
