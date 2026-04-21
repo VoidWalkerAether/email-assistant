@@ -5,7 +5,6 @@ This module handles sending emails and validating email addresses.
 """
 
 import os
-import unused_test_xyz
 import sys
 import json
 import re
