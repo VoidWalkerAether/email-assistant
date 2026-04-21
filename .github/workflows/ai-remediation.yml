@@ -1,12 +1,15 @@
 name: AI Auto-Remediation
 
 on:
-  # ✅ 自动触发：AI Review 完成后自动开始修复
+  # ✅ 自动触发：AI Review 评论发布后立即触发（最可靠）
+  pull_request_review_comment:
+    types: [created]
+  
+  # Fallback: workflow_run（如果上面失败）
   workflow_run:
     workflows: ["Claude AI Code Review"]
     types:
       - completed
-    # ✅ 移除 branches 限制，让所有 PR 分支都能触发
   
   # 手动触发（调试用）
   workflow_dispatch:
@@ -39,8 +42,15 @@ jobs:
             let prNumber = null;
             let branchName = null;
             
-            // ✅ 支持 workflow_run 自动触发
-            if (context.eventName === 'workflow_run') {
+            // ✅ 支持 pull_request_review_comment 触发（最可靠）
+            if (context.eventName === 'pull_request_review_comment') {
+              prNumber = context.payload.pull_request.number;
+              branchName = context.payload.pull_request.head.ref;
+              console.log(`Triggered by review comment on PR #${prNumber}`);
+              console.log(`Branch: ${branchName}`);
+            }
+            // ✅ 支持 workflow_run 自动触发（fallback）
+            else if (context.eventName === 'workflow_run') {
               const workflowName = context.payload.workflow_run.name;
               const conclusion = context.payload.workflow_run.conclusion;
               const headSha = context.payload.workflow_run.head_sha;
@@ -57,7 +67,7 @@ jobs:
                 return;
               }
               
-              // ✅ 方法 1：使用 Search API 查找 PR（最可靠）
+              // 使用 Search API 查找 PR
               try {
                 const { data: searchResult } = await github.rest.search.issuesAndPullRequests({
                   q: `repo:${context.repo.owner}/${context.repo.repo} type:pr state:open sha:${headSha}`
@@ -65,41 +75,14 @@ jobs:
                 
                 if (searchResult.total_count > 0) {
                   prNumber = searchResult.items[0].number;
-                  branchName = headBranch;
-                  console.log(`Found PR #${prNumber} from Search API (method 1)`);
+                  branchName = searchResult.items[0].head.ref || headBranch;
+                  console.log(`Found PR #${prNumber} from Search API`);
                 }
               } catch (error) {
                 console.log(`Search API failed: ${error.message}`);
               }
               
-              // ✅ 方法 2：fallback - 使用 head_branch 作为分支名，但需要 PR 号
-              if (!prNumber) {
-                try {
-                  const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    commit_sha: headSha
-                  });
-                  
-                  if (prs.length > 0) {
-                    prNumber = prs[0].number;
-                    branchName = prs[0].head.ref;
-                    console.log(`Found PR #${prNumber} from listPullRequests (method 2)`);
-                  }
-                } catch (error) {
-                  console.log(`listPullRequests failed: ${error.message}`);
-                }
-              }
-              
-              // ✅ 方法 3：最后的 fallback - 从 head_branch 推断
-              if (!prNumber && headBranch) {
-                console.log(`Using head_branch as fallback: ${headBranch}`);
-                branchName = headBranch;
-                // 但 PR 号还是未知，需要跳过
-                core.setOutput('skip', 'true');
-                return;
-              }
-              
+              // Fallback
               if (!prNumber) {
                 console.log('No PR found, skipping');
                 core.setOutput('skip', 'true');
@@ -116,7 +99,6 @@ jobs:
                 return;
               }
               console.log(`Manual trigger for PR #${prNumber}`);
-              // 手动触发时，分支名稍后通过 API 获取
             }
             
             core.setOutput('pr_number', prNumber);
@@ -125,35 +107,10 @@ jobs:
       
       # ✅ Checkout PR 分支（而不是 main）
       - name: Checkout PR Branch
-        if: steps.get-pr-info.outputs.skip != 'true' && steps.get-pr-info.outputs.branch != ''
+        if: steps.get-pr-info.outputs.skip != 'true'
         uses: actions/checkout@v4
         with:
-          ref: ${{ steps.get-pr-info.outputs.branch }}
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-      
-      # ✅ 如果是 workflow_dispatch，需要获取分支名
-      - name: Get PR Branch (Manual Trigger)
-        if: steps.get-pr-info.outputs.skip != 'true' && steps.get-pr-info.outputs.branch == ''
-        id: get-branch-manual
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const prNumber = parseInt(process.env.PR_NUMBER);
-            const { data: pr } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber
-            });
-            core.setOutput('branch', pr.head.ref);
-        env:
-          PR_NUMBER: ${{ steps.get-pr-info.outputs.pr_number }}
-      
-      - name: Checkout PR Branch (Manual)
-        if: steps.get-pr-info.outputs.skip != 'true' && steps.get-pr-info.outputs.branch == ''
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.get-branch-manual.outputs.branch }}
+          ref: ${{ steps.get-pr-info.outputs.branch || github.head_ref }}
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
       
