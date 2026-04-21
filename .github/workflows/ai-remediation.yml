@@ -4,6 +4,10 @@ on:
   # 手动触发（推荐方式，避免无限循环）
   workflow_dispatch:
     inputs:
+      pr_number:
+        description: 'Pull Request number to fix'
+        required: true
+        default: ''
       max_files:
         description: 'Maximum files to fix (default: 3)'
         required: false
@@ -48,53 +52,76 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const { data: comments } = await github.rest.issues.listComments({
+            // 获取 PR 号：从输入参数
+            const prNumber = context.payload.inputs.pr_number;
+            
+            if (!prNumber) {
+              core.setFailed('PR number is required. Please provide it in workflow_dispatch inputs.');
+              return;
+            }
+            
+            console.log(`Fetching review comments for PR #${prNumber}`);
+            
+            // ✅ 修复：使用正确的 API 获取代码行上的审查评论
+            const { data: comments } = await github.rest.pulls.listReviewComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.issue.number || context.payload.inputs.pr_number
+              pull_number: parseInt(prNumber)
             });
             
-            // 过滤 qwen-review 的评论
+            console.log(`Found ${comments.length} review comments`);
+            
+            // ✅ 修复：直接使用 API 返回的字段，不用正则解析
             const reviewComments = comments
               .filter(c => c.user.login === 'github-actions[bot]')
               .filter(c => c.body.includes('[qwen-review]'))
               .map(c => {
-                // 解析评论中的 location 信息
-                const locationMatch = c.body.match(/location:\{path:"([^"]+)" range:\{start:\{line:(\d+)/);
-                const messageMatch = c.body.match(/message:"([^"]+)"/);
+                // 清理评论 body，提取问题描述
+                const body = c.body
+                  .replace(/\*\*\[qwen-review\]\*\*.*?<br>/, '')
+                  .replace(/<sub>.*?<\/sub>/, '')
+                  .replace(/<!--.*?-->/, '')
+                  .trim()
+                  .split('\n')[0];
                 
-                if (locationMatch && messageMatch) {
-                  return {
-                    location: {
-                      path: locationMatch[1],
-                      range: { start: { line: parseInt(locationMatch[2]) } }
-                    },
-                    message: messageMatch[1],
-                    severity: 'warning'
-                  };
-                }
-                return null;
-              })
-              .filter(c => c !== null);
+                return {
+                  location: {
+                    path: c.path,  // ✅ 直接使用 path 字段
+                    range: { start: { line: c.line } }  // ✅ 直接使用 line 字段
+                  },
+                  message: body || 'Code issue detected',
+                  severity: 'warning'
+                };
+              });
             
-            console.log(`Found ${reviewComments.length} review comments`);
+            console.log(`Filtered to ${reviewComments.length} qwen-review comments`);
+            
+            // 调试输出
+            if (reviewComments.length > 0) {
+              console.log('Sample comment:', JSON.stringify(reviewComments[0], null, 2));
+            }
+            
             core.setOutput('comments', JSON.stringify(reviewComments));
             core.setOutput('count', reviewComments.length);
       
       - name: Run AI Auto-Fix
         id: auto-fix
+        continue-on-error: true
         env:
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
           ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL || 'https://coding.dashscope.aliyuncs.com/apps/anthropic' }}
           ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'qwen3-coder-plus' }}
           REVIEW_COMMENTS: ${{ steps.get-comments.outputs.comments }}
           MAX_FIX_FILES: ${{ github.event.inputs.max_files || '3' }}
-          GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number }}
         run: |
-          echo "🤖 Running AI Auto-Fix..."
-          python3 scripts/auto-fix.py > auto-fix-result.json
+          echo "🤖 Running AI Auto-Fix for PR #${{ github.event.inputs.pr_number }}..."
+          echo "Review comments count: ${{ steps.get-comments.outputs.count }}"
+          # 只捕获 stdout 到 JSON 文件，stderr 正常显示
+          python3 scripts/auto-fix.py > auto-fix-result.json || echo '{"success": false, "error": "Script failed"}' > auto-fix-result.json
+          echo "=== Auto-fix output ==="
           cat auto-fix-result.json
+          echo "======================="
       
       - name: Check if Fixes Applied
         id: check-fixes
@@ -102,16 +129,51 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const result = JSON.parse(fs.readFileSync('auto-fix-result.json', 'utf8'));
             
-            if (result.success && result.fixed_files.length > 0) {
-              console.log(`✅ AI fixed ${result.fixed_files.length} file(s): ${result.fixed_files.join(', ')}`);
-              core.setOutput('has-fixes', 'true');
-              core.setOutput('fixed-files', result.fixed_files.join(', '));
-            } else {
-              console.log('ℹ️ No fixes applied');
+            try {
+              const content = fs.readFileSync('auto-fix-result.json', 'utf8').trim();
+              console.log('Raw output:', content);
+              
+              if (!content) {
+                console.log('Empty output file');
+                core.setOutput('has-fixes', 'false');
+                return;
+              }
+              
+              const result = JSON.parse(content);
+              
+              if (result.success && result.fixed_files && result.fixed_files.length > 0) {
+                console.log(`✅ AI fixed ${result.fixed_files.length} file(s): ${result.fixed_files.join(', ')}`);
+                core.setOutput('has-fixes', 'true');
+                core.setOutput('fixed-files', result.fixed_files.join(', '));
+              } else {
+                console.log('ℹ️ No fixes applied');
+                core.setOutput('has-fixes', 'false');
+              }
+            } catch (e) {
+              console.log('Error parsing result:', e.message);
               core.setOutput('has-fixes', 'false');
             }
+      
+      # ✅ 修复：先获取 PR 分支名（workflow_dispatch 时 github.head_ref 为空）
+      - name: Get PR Branch Name
+        id: get-branch
+        if: steps.check-fixes.outputs.has-fixes == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = parseInt(context.payload.inputs.pr_number);
+            console.log(`Fetching PR #${prNumber} branch info...`);
+            
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+            
+            const branchName = pr.head.ref;
+            console.log(`PR branch: ${branchName}`);
+            core.setOutput('branch', branchName);
       
       - name: Commit and Push Fixes
         if: steps.check-fixes.outputs.has-fixes == 'true'
@@ -119,6 +181,10 @@ jobs:
           echo "📝 Committing fixes..."
           
           git add -A
+          
+          # 移除 auto-fix-result.json（临时文件，不应该提交）
+          git reset auto-fix-result.json 2>/dev/null || true
+          rm -f auto-fix-result.json
           
           if git diff --staged --quiet; then
             echo "No changes to commit"
@@ -128,24 +194,31 @@ jobs:
           git commit -m "🤖 AI auto-fix: ${{ steps.check-fixes.outputs.fixed-files }}"
           
           echo "🚀 Pushing fixes to PR..."
-          git push origin HEAD:${{ github.head_ref }}
+          echo "Target branch: ${{ steps.get-branch.outputs.branch }}"
+          git push origin HEAD:${{ steps.get-branch.outputs.branch }}
           
           echo "✅ Fixes pushed successfully!"
       
       - name: Add Comment to PR
         if: always()
         uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ github.event.inputs.pr_number }}
+          HAS_FIXES: ${{ steps.check-fixes.outputs.has-fixes }}
+          FIXED_FILES: ${{ steps.check-fixes.outputs.fixed-files }}
+          COMMENT_COUNT: ${{ steps.get-comments.outputs.count }}
         with:
           script: |
-            const fs = require('fs');
+            const prNumber = process.env.PR_NUMBER || context.payload.inputs.pr_number;
+            const hasFixes = process.env.HAS_FIXES === 'true';
+            const fixedFiles = process.env.FIXED_FILES || '';
+            const commentCount = parseInt(process.env.COMMENT_COUNT || '0');
             
             let comment = '';
             
-            if (context.steps.check-fixes?.outputs?.has-fixes === 'true') {
-              const fixedFiles = context.steps.check-fixes.outputs.fixed_files;
+            if (hasFixes) {
               comment = `## 🤖 AI Auto-Fix Complete\n\n✅ Successfully fixed **${fixedFiles}**\n\nThe fixes have been pushed to this PR. Workflow will re-run automatically.`;
             } else {
-              const commentCount = context.steps.get-comments?.outputs?.count || 0;
               if (commentCount === 0) {
                 comment = `## ℹ️ AI Auto-Fix Skipped\n\nNo review comments found to fix.`;
               } else {
@@ -153,9 +226,13 @@ jobs:
               }
             }
             
-            github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: comment
-            });
+            if (prNumber) {
+              github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: parseInt(prNumber),
+                body: comment
+              });
+            } else {
+              console.log('No PR number, skipping comment');
+            }

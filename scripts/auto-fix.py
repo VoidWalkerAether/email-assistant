@@ -14,10 +14,25 @@ from claude_agent_sdk import query, ClaudeAgentOptions, AssistantMessage, TextBl
 
 def get_pr_info():
     """从 GitHub Actions 环境变量获取 PR 信息"""
+    owner = os.environ.get("GITHUB_REPOSITORY_OWNER")
+    repo_full = os.environ.get("GITHUB_REPOSITORY", "")
+    pr_number = os.environ.get("PR_NUMBER") or os.environ.get("GITHUB_EVENT_NUMBER")
+    
+    if not owner:
+        raise ValueError("GITHUB_REPOSITORY_OWNER is not set")
+    if not repo_full:
+        raise ValueError("GITHUB_REPOSITORY is not set")
+    if not pr_number:
+        raise ValueError("PR_NUMBER or GITHUB_EVENT_NUMBER is not set")
+    
+    repo = repo_full.split("/")[1]
+    if not repo:
+        raise ValueError("Invalid GITHUB_REPOSITORY format")
+    
     return {
-        "owner": os.environ.get("GITHUB_REPOSITORY_OWNER"),
-        "repo": os.environ.get("GITHUB_REPOSITORY", "").split("/")[1],
-        "pr_number": os.environ.get("GITHUB_EVENT_NUMBER"),
+        "owner": owner,
+        "repo": repo,
+        "pr_number": pr_number,
         "sha": os.environ.get("GITHUB_SHA", "HEAD"),
     }
 
@@ -59,6 +74,7 @@ def get_review_comments():
     try:
         comments = json.loads(comments_json)
         print(f"[INFO] Found {len(comments)} review comments", file=sys.stderr)
+        print(f"[DEBUG] Comments: {comments_json[:200]}...", file=sys.stderr)
         return comments
     except json.JSONDecodeError as e:
         print(f"[ERROR] Failed to parse REVIEW_COMMENTS: {e}", file=sys.stderr)
@@ -172,18 +188,80 @@ def apply_fix(filepath, fixed_content):
         return False
 
 
+async def process_file(filepath, issues):
+    """异步处理单个文件的修复"""
+    print(f"[INFO] Fixing {filepath} ({len(issues)} issues)...", file=sys.stderr)
+    
+    content = read_file_content(filepath)
+    if not content:
+        print(f"[WARN] Skipping {filepath}: empty or unreadable", file=sys.stderr)
+        return None
+    
+    # 调用 AI 生成修复
+    fixed_content = await call_ai_for_fix(filepath, content, issues)
+    if not fixed_content:
+        print(f"[WARN] AI failed to generate fix for {filepath}", file=sys.stderr)
+        return None
+    
+    # 应用修复
+    if apply_fix(filepath, fixed_content):
+        print(f"[INFO] ✅ Fixed {filepath}", file=sys.stderr)
+        return filepath
+    
+    return None
+
+
+async def process_files_async(issues_by_file):
+    """异步处理多个文件"""
+    tasks = []
+    for filepath, issues in issues_by_file.items():
+        task = process_file(filepath, issues)
+        tasks.append(task)
+    
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    fixed_files = []
+    for result in results:
+        if isinstance(result, str):  # 成功修复的文件路径
+            fixed_files.append(result)
+        elif isinstance(result, Exception):
+            print(f"[ERROR] Error processing file: {result}", file=sys.stderr)
+    
+    return fixed_files
+
+
 def main():
     """主函数"""
+    # 所有日志输出到 stderr，只有 JSON 输出到 stdout
     print("[INFO] 🚀 Starting AI Auto-Fix...", file=sys.stderr)
     
-    # 获取 PR 信息
-    pr_info = get_pr_info()
-    print(f"[INFO] PR: #{pr_info['pr_number']} in {pr_info['owner']}/{pr_info['repo']}", file=sys.stderr)
+    try:
+        # 获取 PR 信息
+        pr_info = get_pr_info()
+        print(f"[INFO] PR: #{pr_info['pr_number']} in {pr_info['owner']}/{pr_info['repo']}", file=sys.stderr)
+    except ValueError as e:
+        print(f"[ERROR] {e}", file=sys.stderr)
+        result = {
+            "fixed_files": [],
+            "total_files": 0,
+            "success": False,
+            "reason": str(e)
+        }
+        print(json.dumps(result))
+        return 1
     
     # 获取 Review 评论
     comments = get_review_comments()
     if not comments:
         print("[INFO] No review comments to fix, exiting.", file=sys.stderr)
+        # 输出空 JSON（而不是直接退出）
+        result = {
+            "fixed_files": [],
+            "total_files": 0,
+            "success": False,
+            "reason": "No review comments found"
+        }
+        print(json.dumps(result))
         return 0
     
     # 按文件分组问题
@@ -196,26 +274,11 @@ def main():
         print(f"[WARN] Too many files ({len(issues_by_file)}), limiting to {max_files}", file=sys.stderr)
         issues_by_file = dict(list(issues_by_file.items())[:max_files])
     
-    # 逐个文件修复
-    fixed_files = []
-    for filepath, issues in issues_by_file.items():
-        print(f"[INFO] Fixing {filepath} ({len(issues)} issues)...", file=sys.stderr)
-        
-        content = read_file_content(filepath)
-        if not content:
-            print(f"[WARN] Skipping {filepath}: empty or unreadable", file=sys.stderr)
-            continue
-        
-        # 调用 AI 生成修复
-        fixed_content = asyncio.run(call_ai_for_fix(filepath, content, issues))
-        if not fixed_content:
-            print(f"[WARN] AI failed to generate fix for {filepath}", file=sys.stderr)
-            continue
-        
-        # 应用修复
-        if apply_fix(filepath, fixed_content):
-            fixed_files.append(filepath)
-            print(f"[INFO] ✅ Fixed {filepath}", file=sys.stderr)
+    # 异步处理所有文件
+    fixed_files = asyncio.run(process_files_async(issues_by_file))
+    
+    # 过滤掉 None 值（代表失败的修复）
+    fixed_files = [f for f in fixed_files if f is not None]
     
     # 输出结果
     print("", file=sys.stderr)

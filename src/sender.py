@@ -1,4 +1,10 @@
-"""Email sender module - High Risk"""
+"""
+Email sender module
+
+This module handles sending emails and validating email addresses.
+"""
+
+import os
 
 
 def send_email(to: str, subject: str, body: str) -> bool:
@@ -14,7 +20,8 @@ def send_email(to: str, subject: str, body: str) -> bool:
         True if sent successfully
     """
     # TODO: Implement actual email sending
-    print(f"Sending to {to}: {subject}")
+    my_var = to  # Fixed variable naming convention
+    print(f"Sending to {my_var}: {subject}")
     return True
 
 
@@ -28,14 +35,19 @@ def validate_email(email: str) -> bool:
     Returns:
         True if valid format
     """
-    return "@" in email and "." in email
+    import re  # Import only when needed
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return bool(re.match(pattern, email))
 
+
+# Constants should be uppercase
+TEST_EMAIL = "test@example.com"
 
 if __name__ == "__main__":
-    # Test
-    print(validate_email("test@example.com"))  # True
-    print(validate_email("invalid"))  # False
-    print(send_email("test@example.com", "Hello", "World"))  # True
-
-# High Risk Test - 2026-04-09
-# 这行代码用于测试 High Risk 阻止功能
+    # Test with error handling
+    try:
+        print(validate_email("test@example.com"))  # True
+        print(validate_email("invalid"))  # False
+        print(send_email("test@example.com", "Hello", "World"))  # True
+    except Exception as e:
+        print(f"An error occurred: {e}")
