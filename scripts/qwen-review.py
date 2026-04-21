@@ -5,12 +5,28 @@ Claude Code Review - 使用阿里云代理的 Claude 模型进行代码审核
 """
 
 import json
+import logging
 import os
 import sys
 import subprocess
 import re
 import asyncio
 from claude_agent_sdk import query, ClaudeAgentOptions, AssistantMessage, TextBlock
+
+
+def setup_logging():
+    """配置日志级别"""
+    log_level = os.environ.get('LOG_LEVEL', 'WARNING').upper()
+    level = getattr(logging, log_level, logging.WARNING)
+    logging.basicConfig(
+        level=level,
+        format='[%(levelname)s] %(message)s',
+        stream=sys.stderr
+    )
+    return logging.getLogger(__name__)
+
+
+logger = setup_logging()
 
 
 def get_changed_files():
@@ -33,27 +49,24 @@ def read_file_content(filepath):
         with open(filepath, 'r', encoding='utf-8') as f:
             return f.read()
     except Exception as e:
-        print(f"Error reading {filepath}: {e}", file=sys.stderr)
+        logger.error(f"Error reading {filepath}: {e}")
         return ""
 
 
 async def call_claude_async(code_content, filename):
     """使用 Claude 进行代码审核（通过阿里云代理）"""
 
-    # 环境变量配置
     auth_token = os.environ.get('ANTHROPIC_AUTH_TOKEN')
     base_url = os.environ.get('ANTHROPIC_BASE_URL', 'https://coding.dashscope.aliyuncs.com/apps/anthropic')
     model = os.environ.get('ANTHROPIC_MODEL', 'qwen3-coder-plus')
     small_model = os.environ.get('ANTHROPIC_SMALL_FAST_MODEL', 'qwen3-coder-plus')
 
-    # [DEBUG] 打印配置信息
-    print(f"[DEBUG] Config: model={model}, base_url={base_url}, token_set={bool(auth_token)}", file=sys.stderr)
+    logger.debug(f"Config: model={model}, base_url={base_url}, token_set={bool(auth_token)}")
 
     if not auth_token:
-        print("[ERROR] ANTHROPIC_AUTH_TOKEN not set", file=sys.stderr)
+        logger.error("ANTHROPIC_AUTH_TOKEN not set")
         return []
 
-    # 构建提示词
     prompt = f"""请审查以下代码，找出潜在问题：
 - 代码风格和最佳实践
 - 潜在 bug 和安全问题
@@ -95,95 +108,87 @@ async def call_claude_async(code_content, filename):
         turn_count = 0
         message_count = 0
 
-        print("[DEBUG] Starting query loop...", file=sys.stderr)
+        logger.debug("Starting query loop...")
         async for message in query(prompt=prompt, options=options):
             message_count += 1
-            print(f"[DEBUG] Received message #{message_count}: {type(message).__name__}", file=sys.stderr)
+            logger.debug(f"Received message #{message_count}: {type(message).__name__}")
 
             if isinstance(message, AssistantMessage):
                 turn_count += 1
-                print(f"[DEBUG] AssistantMessage turn {turn_count}, content blocks: {len(message.content)}", file=sys.stderr)
+                logger.debug(f"AssistantMessage turn {turn_count}, content blocks: {len(message.content)}")
                 for i, block in enumerate(message.content):
-                    print(f"[DEBUG]   Block {i}: {type(block).__name__}", file=sys.stderr)
+                    logger.debug(f"  Block {i}: {type(block).__name__}")
                     if isinstance(block, TextBlock):
                         full_response += block.text
-                        print(f"[DEBUG]   Appended {len(block.text)} chars", file=sys.stderr)
+                        logger.debug(f"  Appended {len(block.text)} chars")
             else:
-                print(f"[DEBUG] Skipping unknown message type: {type(message).__name__}", file=sys.stderr)
+                logger.debug(f"Skipping unknown message type: {type(message).__name__}")
 
-        print(f"[DEBUG] Total messages: {message_count}, turns: {turn_count}", file=sys.stderr)
-        print(f"[DEBUG] Full response length: {len(full_response)} chars", file=sys.stderr)
+        logger.debug(f"Total messages: {message_count}, turns: {turn_count}")
+        logger.debug(f"Full response length: {len(full_response)} chars")
 
         if not full_response:
-            print("[ERROR] Empty response from model", file=sys.stderr)
+            logger.error("Empty response from model")
             return []
 
-        # [DEBUG] 打印原始响应前 500 字符
         preview = full_response[:500] + "..." if len(full_response) > 500 else full_response
-        print(f"[DEBUG] Response preview:\n{preview}", file=sys.stderr)
+        logger.debug(f"Response preview:\n{preview}")
 
-        # 提取 JSON（处理可能的 markdown 格式）
-        # 先尝试直接解析
-        print("[DEBUG] Attempting JSON parse method 1: direct parse", file=sys.stderr)
+        logger.debug("Attempting JSON parse method 1: direct parse")
         try:
             result = json.loads(full_response.strip())
-            print(f"[DEBUG] Direct parse successful, found {len(result.get('issues', []))} issues", file=sys.stderr)
+            logger.debug(f"Direct parse successful, found {len(result.get('issues', []))} issues")
             return result.get('issues', [])
         except json.JSONDecodeError as e:
-            print(f"[DEBUG] Direct parse failed: {e}", file=sys.stderr)
+            logger.debug(f"Direct parse failed: {e}")
             pass
 
-        # 尝试提取 markdown 代码块中的 JSON
-        print("[DEBUG] Attempting JSON parse method 2: markdown code block", file=sys.stderr)
+        logger.debug("Attempting JSON parse method 2: markdown code block")
         code_block_match = re.search(r'```(?:json)?\s*({.*?})\s*```', full_response, re.DOTALL)
         if code_block_match:
-            print("[DEBUG] Found markdown code block", file=sys.stderr)
+            logger.debug("Found markdown code block")
             try:
                 result = json.loads(code_block_match.group(1))
-                print(f"[DEBUG] Markdown block parse successful, found {len(result.get('issues', []))} issues", file=sys.stderr)
+                logger.debug(f"Markdown block parse successful, found {len(result.get('issues', []))} issues")
                 return result.get('issues', [])
             except json.JSONDecodeError as e:
-                print(f"[DEBUG] Markdown block parse failed: {e}", file=sys.stderr)
+                logger.debug(f"Markdown block parse failed: {e}")
                 pass
         else:
-            print("[DEBUG] No markdown code block found", file=sys.stderr)
+            logger.debug("No markdown code block found")
 
-        # 最后尝试匹配大括号包裹的内容
-        print("[DEBUG] Attempting JSON parse method 3: brace matching", file=sys.stderr)
+        logger.debug("Attempting JSON parse method 3: brace matching")
         json_match = re.search(r'\{[^{}]*"issues"[^{}]*\}', full_response, re.DOTALL)
         if json_match:
-            print("[DEBUG] Found brace pattern", file=sys.stderr)
+            logger.debug("Found brace pattern")
             try:
                 result = json.loads(json_match.group())
-                print(f"[DEBUG] Brace match parse successful, found {len(result.get('issues', []))} issues", file=sys.stderr)
+                logger.debug(f"Brace match parse successful, found {len(result.get('issues', []))} issues")
                 return result.get('issues', [])
             except json.JSONDecodeError as e:
-                print(f"[DEBUG] Brace match parse failed: {e}", file=sys.stderr)
+                logger.debug(f"Brace match parse failed: {e}")
                 pass
         else:
-            print("[DEBUG] No brace pattern found", file=sys.stderr)
+            logger.debug("No brace pattern found")
 
-        print(f"[ERROR] All JSON parse methods failed", file=sys.stderr)
-        print(f"[ERROR] Raw response (first 1000 chars): {full_response[:1000]}", file=sys.stderr)
+        logger.error("All JSON parse methods failed")
+        logger.error(f"Raw response (first 1000 chars): {full_response[:1000]}")
         return []
     except Exception as e:
         import traceback
-        print(f"[ERROR] Exception in call_claude_async: {e}", file=sys.stderr)
-        print(f"[ERROR] Traceback: {traceback.format_exc()}", file=sys.stderr)
+        logger.error(f"Exception in call_claude_async: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return []
 
 
 def call_claude_api(code_content, filename):
     """调用 Claude API 进行代码审核（包装异步函数）"""
     try:
-        # 检查是否已在事件循环中运行
         loop = asyncio.get_running_loop()
-        print(f"[DEBUG] call_claude_api: running in existing event loop", file=sys.stderr)
-        # 在已有循环中同步运行（使用嵌套事件循环）
+        logger.debug("call_claude_api: running in existing event loop")
         return loop.run_until_complete(call_claude_async(code_content, filename))
     except RuntimeError:
-        # 没有事件循环，创建新的
-        print(f"[DEBUG] call_claude_api: creating new event loop", file=sys.stderr)
+        logger.debug("call_claude_api: creating new event loop")
         return asyncio.run(call_claude_async(code_content, filename))
 
 
@@ -192,25 +197,23 @@ def main():
     changed_files = get_changed_files()
     all_diagnostics = []
 
-    print(f"🔍 Found {len(changed_files)} changed files", file=sys.stderr)
+    logger.info(f"Found {len(changed_files)} changed files")
 
-    # 只审查 Python 文件
     py_files = [f for f in changed_files if f.endswith('.py')]
-    print(f"🐍 Found {len(py_files)} Python files to review", file=sys.stderr)
+    logger.info(f"Found {len(py_files)} Python files to review")
 
     for filepath in py_files:
         content = read_file_content(filepath)
         if not content:
-            print(f"[WARN] Skipping {filepath}: empty or unreadable", file=sys.stderr)
+            logger.warning(f"Skipping {filepath}: empty or unreadable")
             continue
 
-        print(f"[INFO] Reviewing {filepath} ({len(content)} bytes)...", file=sys.stderr)
+        logger.info(f"Reviewing {filepath} ({len(content)} bytes)...")
         issues = call_claude_api(content, filepath)
-        print(f"[INFO]   Found {len(issues)} issues in {filepath}", file=sys.stderr)
+        logger.info(f"  Found {len(issues)} issues in {filepath}")
 
-        # 打印每个 issue 详情
         for i, issue in enumerate(issues):
-            print(f"[ISSUE #{i+1}] Line {issue.get('line', '?')}: {issue.get('message', '?')} ({issue.get('severity', '?')})", file=sys.stderr)
+            logger.info(f"[ISSUE #{i+1}] Line {issue.get('line', '?')}: {issue.get('message', '?')} ({issue.get('severity', '?')})")
 
         for issue in issues:
             diagnostic = {
@@ -232,11 +235,9 @@ def main():
             all_diagnostics.append(diagnostic)
 
     if not all_diagnostics:
-        print("[WARN] No issues found by AI review", file=sys.stderr)
+        logger.warning("No issues found by AI review")
 
-    # 只输出纯 JSON 到 stdout（ReviewDog 需要）
-    # 不用 indent，输出单行 JSON
-    print(json.dumps({"diagnostics": all_diagnostics}))
+    print(json.dumps({"diagnostics": all_diagnostics}, ensure_ascii=False))
 
 
 if __name__ == "__main__":
