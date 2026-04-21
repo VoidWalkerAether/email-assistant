@@ -196,7 +196,7 @@ jobs:
         env:
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
           ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL || 'https://coding.dashscope.aliyuncs.com/apps/anthropic' }}
-          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'qwen3-coder-plus' }}
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'qwen3.5-plus' }}
           REVIEW_COMMENTS: ${{ steps.get-comments.outputs.comments }}
           MAX_FIX_FILES: ${{ github.event.inputs.max_files || '3' }}
           PR_NUMBER: ${{ steps.get-pr-number.outputs.pr_number }}
