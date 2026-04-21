@@ -155,12 +155,36 @@ jobs:
               core.setOutput('has-fixes', 'false');
             }
       
+      # ✅ 修复：先获取 PR 分支名（workflow_dispatch 时 github.head_ref 为空）
+      - name: Get PR Branch Name
+        id: get-branch
+        if: steps.check-fixes.outputs.has-fixes == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = parseInt(context.payload.inputs.pr_number);
+            console.log(`Fetching PR #${prNumber} branch info...`);
+            
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+            
+            const branchName = pr.head.ref;
+            console.log(`PR branch: ${branchName}`);
+            core.setOutput('branch', branchName);
+      
       - name: Commit and Push Fixes
         if: steps.check-fixes.outputs.has-fixes == 'true'
         run: |
           echo "📝 Committing fixes..."
           
           git add -A
+          
+          # 移除 auto-fix-result.json（临时文件，不应该提交）
+          git reset auto-fix-result.json 2>/dev/null || true
+          rm -f auto-fix-result.json
           
           if git diff --staged --quiet; then
             echo "No changes to commit"
@@ -170,7 +194,8 @@ jobs:
           git commit -m "🤖 AI auto-fix: ${{ steps.check-fixes.outputs.fixed-files }}"
           
           echo "🚀 Pushing fixes to PR..."
-          git push origin HEAD:${{ github.head_ref }}
+          echo "Target branch: ${{ steps.get-branch.outputs.branch }}"
+          git push origin HEAD:${{ steps.get-branch.outputs.branch }}
           
           echo "✅ Fixes pushed successfully!"
       
