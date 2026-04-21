@@ -6,8 +6,7 @@ on:
     workflows: ["Claude AI Code Review"]
     types:
       - completed
-    branches:
-      - main
+    # ✅ 移除 branches 限制，让所有 PR 分支都能触发
   
   # 手动触发（调试用）
   workflow_dispatch:
