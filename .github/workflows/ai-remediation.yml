@@ -29,34 +29,14 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-      
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install claude-agent-sdk
-      
-      - name: Configure Git for Auto-Commit
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-      
-      - name: Get PR Number (Auto or Manual)
-        id: get-pr-number
+      # ✅ 先获取 PR 号和分支名（用于 checkout 正确的分支）
+      - name: Get PR Info (Auto or Manual)
+        id: get-pr-info
         uses: actions/github-script@v7
         with:
           script: |
             let prNumber = null;
-            let headSha = null;
+            let branchName = null;
             
             // ✅ 支持 workflow_run 自动触发
             if (context.eventName === 'workflow_run') {
@@ -88,7 +68,8 @@ jobs:
               }
               
               prNumber = prs[0].number;
-              console.log(`Found PR #${prNumber}`);
+              branchName = prs[0].head.ref;
+              console.log(`Found PR #${prNumber} on branch ${branchName}`);
             }
             // ✅ 支持 workflow_dispatch 手动触发
             else if (context.eventName === 'workflow_dispatch') {
@@ -98,10 +79,61 @@ jobs:
                 return;
               }
               console.log(`Manual trigger for PR #${prNumber}`);
+              // 手动触发时，分支名稍后通过 API 获取
             }
             
             core.setOutput('pr_number', prNumber);
+            core.setOutput('branch', branchName);
             core.setOutput('skip', 'false');
+      
+      # ✅ Checkout PR 分支（而不是 main）
+      - name: Checkout PR Branch
+        if: steps.get-pr-info.outputs.skip != 'true' && steps.get-pr-info.outputs.branch != ''
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.get-pr-info.outputs.branch }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      # ✅ 如果是 workflow_dispatch，需要获取分支名
+      - name: Get PR Branch (Manual Trigger)
+        if: steps.get-pr-info.outputs.skip != 'true' && steps.get-pr-info.outputs.branch == ''
+        id: get-branch-manual
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = parseInt(process.env.PR_NUMBER);
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+            core.setOutput('branch', pr.head.ref);
+        env:
+          PR_NUMBER: ${{ steps.get-pr-info.outputs.pr_number }}
+      
+      - name: Checkout PR Branch (Manual)
+        if: steps.get-pr-info.outputs.skip != 'true' && steps.get-pr-info.outputs.branch == ''
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.get-branch-manual.outputs.branch }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install claude-agent-sdk
+      
+      - name: Configure Git for Auto-Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
       
       - name: Get PR Review Comments
         id: get-comments
@@ -242,37 +274,10 @@ jobs:
               core.setOutput('has-fixes', 'false');
             }
       
-      # ✅ 获取 PR 分支名（workflow_dispatch 时 github.head_ref 为空）
-      - name: Get PR Branch Name
-        id: get-branch
-        if: steps.check-fixes.outputs.has-fixes == 'true' && steps.get-pr-number.outputs.skip != 'true'
-        env:
-          PR_NUMBER: ${{ steps.get-pr-number.outputs.pr_number }}
-        uses: actions/github-script@v7
-        with:
-          script: |
-            // ✅ 使用 get-pr-number 步骤的输出（支持 workflow_run 和 workflow_dispatch）
-            const prNumber = parseInt(process.env.PR_NUMBER);
-            
-            if (!prNumber) {
-              core.setFailed('PR number is required');
-              return;
-            }
-            
-            console.log(`Fetching PR #${prNumber} branch info...`);
-            
-            const { data: pr } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber
-            });
-            
-            const branchName = pr.head.ref;
-            console.log(`PR branch: ${branchName}`);
-            core.setOutput('branch', branchName);
-      
       - name: Commit and Push Fixes
-        if: steps.check-fixes.outputs.has-fixes == 'true'
+        if: steps.check-fixes.outputs.has-fixes == 'true' && steps.get-pr-info.outputs.skip != 'true'
+        env:
+          TARGET_BRANCH: ${{ steps.get-pr-info.outputs.branch || steps.get-branch-manual.outputs.branch }}
         run: |
           echo "📝 Committing fixes..."
           
@@ -290,8 +295,8 @@ jobs:
           git commit -m "🤖 AI auto-fix: ${{ steps.check-fixes.outputs.fixed-files }}"
           
           echo "🚀 Pushing fixes to PR..."
-          echo "Target branch: ${{ steps.get-branch.outputs.branch }}"
-          git push origin HEAD:${{ steps.get-branch.outputs.branch }}
+          echo "Target branch: $TARGET_BRANCH"
+          git push origin HEAD:$TARGET_BRANCH
           
           echo "✅ Fixes pushed successfully!"
       
@@ -299,7 +304,7 @@ jobs:
         if: always()
         uses: actions/github-script@v7
         env:
-          PR_NUMBER: ${{ steps.get-pr-number.outputs.pr_number }}
+          PR_NUMBER: ${{ steps.get-pr-info.outputs.pr_number }}
           HAS_FIXES: ${{ steps.check-fixes.outputs.has-fixes }}
           FIXED_FILES: ${{ steps.check-fixes.outputs.fixed-files }}
           COMMENT_COUNT: ${{ steps.get-comments.outputs.count }}
