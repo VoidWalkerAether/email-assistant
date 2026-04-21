@@ -175,11 +175,11 @@ jobs:
             // ✅ 直接使用 API 返回的字段，不用正则解析
             const reviewComments = comments
               .filter(c => c.user.login === 'github-actions[bot]')
-              .filter(c => c.body.includes('[qwen-review]'))
+              .filter(c => c.body.includes('[Claude AI Review]'))
               .map(c => {
                 // 清理评论 body，提取问题描述
                 const body = c.body
-                  .replace(/\*\*\[qwen-review\]\*\*.*?<br>/, '')
+                  .replace(/\*\*\[Claude AI Review\]\*\*.*?<br>/, '')
                   .replace(/<sub>.*?<\/sub>/, '')
                   .replace(/<!--.*?-->/, '')
                   .trim()
