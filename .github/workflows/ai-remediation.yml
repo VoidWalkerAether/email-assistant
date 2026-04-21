@@ -43,9 +43,11 @@ jobs:
               const workflowName = context.payload.workflow_run.name;
               const conclusion = context.payload.workflow_run.conclusion;
               const headSha = context.payload.workflow_run.head_sha;
+              const headBranch = context.payload.workflow_run.head_branch;
               
               console.log(`Triggered by workflow_run: ${workflowName} (${conclusion})`);
               console.log(`Head SHA: ${headSha}`);
+              console.log(`Head Branch: ${headBranch}`);
               
               // 只处理成功的 review
               if (conclusion !== 'success') {
@@ -54,22 +56,43 @@ jobs:
                 return;
               }
               
-              // 从 workflow_run 获取 PR 号
-              const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                commit_sha: headSha
-              });
+              // ✅ 方法 1：直接从 workflow_run 事件获取 PR 列表（更可靠）
+              const pullRequests = context.payload.workflow_run.pull_requests || [];
               
-              if (prs.length === 0) {
-                console.log('No PR found for this commit');
-                core.setOutput('skip', 'true');
-                return;
+              if (pullRequests.length > 0) {
+                prNumber = pullRequests[0].number;
+                branchName = pullRequests[0].head.ref || headBranch;
+                console.log(`Found PR #${prNumber} from event (method 1)`);
+              } 
+              // ✅ 方法 2：如果 event 中没有，调用 API 获取
+              else {
+                try {
+                  const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    commit_sha: headSha
+                  });
+                  
+                  if (prs.length === 0) {
+                    console.log('No PR found for this commit');
+                    core.setOutput('skip', 'true');
+                    return;
+                  }
+                  
+                  prNumber = prs[0].number;
+                  branchName = prs[0].head.ref;
+                  console.log(`Found PR #${prNumber} from API (method 2)`);
+                } catch (error) {
+                  console.log(`API call failed: ${error.message}`);
+                  console.log('Trying fallback: use head_branch as branch name');
+                  branchName = headBranch;
+                  // PR 号未知，跳过
+                  core.setOutput('skip', 'true');
+                  return;
+                }
               }
               
-              prNumber = prs[0].number;
-              branchName = prs[0].head.ref;
-              console.log(`Found PR #${prNumber} on branch ${branchName}`);
+              console.log(`PR #${prNumber} on branch ${branchName}`);
             }
             // ✅ 支持 workflow_dispatch 手动触发
             else if (context.eventName === 'workflow_dispatch') {
