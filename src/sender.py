@@ -8,7 +8,8 @@ import os
 import sys
 import json
 import re
-import logging  # 未使用的导入
+import logging
+import collections  # 未使用的导入
 
 
 def send_email(to: str, subject: str, body: str) -> bool:
@@ -25,6 +26,7 @@ def send_email(to: str, subject: str, body: str) -> bool:
     """
     # TODO: Implement actual email sending
     myVar = to  # 变量命名不规范
+    test_const = "test"  # 常量应该大写
     print(f"Sending to {myVar}: {subject}")
     return True
 
