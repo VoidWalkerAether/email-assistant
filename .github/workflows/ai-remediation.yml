@@ -23,6 +23,7 @@ on:
 permissions:
   pull-requests: write
   contents: write
+  issues: read  # 用于 search API
 
 jobs:
   auto-fix:
@@ -56,16 +57,23 @@ jobs:
                 return;
               }
               
-              // ✅ 方法 1：直接从 workflow_run 事件获取 PR 列表（更可靠）
-              const pullRequests = context.payload.workflow_run.pull_requests || [];
+              // ✅ 方法 1：使用 Search API 查找 PR（最可靠）
+              try {
+                const { data: searchResult } = await github.rest.search.issuesAndPullRequests({
+                  q: `repo:${context.repo.owner}/${context.repo.repo} type:pr state:open sha:${headSha}`
+                });
+                
+                if (searchResult.total_count > 0) {
+                  prNumber = searchResult.items[0].number;
+                  branchName = headBranch;
+                  console.log(`Found PR #${prNumber} from Search API (method 1)`);
+                }
+              } catch (error) {
+                console.log(`Search API failed: ${error.message}`);
+              }
               
-              if (pullRequests.length > 0) {
-                prNumber = pullRequests[0].number;
-                branchName = pullRequests[0].head.ref || headBranch;
-                console.log(`Found PR #${prNumber} from event (method 1)`);
-              } 
-              // ✅ 方法 2：如果 event 中没有，调用 API 获取
-              else {
+              // ✅ 方法 2：fallback - 使用 head_branch 作为分支名，但需要 PR 号
+              if (!prNumber) {
                 try {
                   const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
                     owner: context.repo.owner,
@@ -73,23 +81,29 @@ jobs:
                     commit_sha: headSha
                   });
                   
-                  if (prs.length === 0) {
-                    console.log('No PR found for this commit');
-                    core.setOutput('skip', 'true');
-                    return;
+                  if (prs.length > 0) {
+                    prNumber = prs[0].number;
+                    branchName = prs[0].head.ref;
+                    console.log(`Found PR #${prNumber} from listPullRequests (method 2)`);
                   }
-                  
-                  prNumber = prs[0].number;
-                  branchName = prs[0].head.ref;
-                  console.log(`Found PR #${prNumber} from API (method 2)`);
                 } catch (error) {
-                  console.log(`API call failed: ${error.message}`);
-                  console.log('Trying fallback: use head_branch as branch name');
-                  branchName = headBranch;
-                  // PR 号未知，跳过
-                  core.setOutput('skip', 'true');
-                  return;
+                  console.log(`listPullRequests failed: ${error.message}`);
                 }
+              }
+              
+              // ✅ 方法 3：最后的 fallback - 从 head_branch 推断
+              if (!prNumber && headBranch) {
+                console.log(`Using head_branch as fallback: ${headBranch}`);
+                branchName = headBranch;
+                // 但 PR 号还是未知，需要跳过
+                core.setOutput('skip', 'true');
+                return;
+              }
+              
+              if (!prNumber) {
+                console.log('No PR found, skipping');
+                core.setOutput('skip', 'true');
+                return;
               }
               
               console.log(`PR #${prNumber} on branch ${branchName}`);
