@@ -160,6 +160,8 @@ jobs:
       - name: Check if Review Found Issues
         id: check-issues
         if: steps.get-pr-number.outputs.skip != 'true'
+        env:
+          COMMENT_COUNT: ${{ steps.get-comments.outputs.count }}
         uses: actions/github-script@v7
         with:
           script: |
