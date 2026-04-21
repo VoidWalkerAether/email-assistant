@@ -5,6 +5,9 @@ This module handles sending emails and validating email addresses.
 """
 
 import os
+import sys
+import json
+import re  # 未使用的导入
 
 
 def send_email(to: str, subject: str, body: str) -> bool:
@@ -20,8 +23,9 @@ def send_email(to: str, subject: str, body: str) -> bool:
         True if sent successfully
     """
     # TODO: Implement actual email sending
-    my_var = to  # Fixed variable naming convention
-    print(f"Sending to {my_var}: {subject}")
+    myVar = to  # 变量命名不规范（应该 my_var）
+    test_email = "test@example.com"  # 常量应该大写 TEST_EMAIL
+    print(f"Sending to {myVar}: {subject}")
     return True
 
 

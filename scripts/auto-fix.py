@@ -18,16 +18,8 @@ def get_pr_info():
     repo_full = os.environ.get("GITHUB_REPOSITORY", "")
     pr_number = os.environ.get("PR_NUMBER") or os.environ.get("GITHUB_EVENT_NUMBER")
     
-    if not owner:
-        raise ValueError("GITHUB_REPOSITORY_OWNER is not set")
-    if not repo_full:
-        raise ValueError("GITHUB_REPOSITORY is not set")
-    if not pr_number:
-        raise ValueError("PR_NUMBER or GITHUB_EVENT_NUMBER is not set")
-    
+    # 故意移除验证，让 AI 发现并修复
     repo = repo_full.split("/")[1]
-    if not repo:
-        raise ValueError("Invalid GITHUB_REPOSITORY format")
     
     return {
         "owner": owner,
