@@ -56,4 +56,4 @@ if __name__ == "__main__":
         print(validate_email("invalid"))  # False
         print(send_email("test@example.com", "Hello", "World"))  # True
     except Exception as e:
-        print(f"An error occurred: {e}")
+        print(f"An error occurred: {e}")import unused_module
