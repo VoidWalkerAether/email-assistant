@@ -1,11 +1,7 @@
 name: AI Auto-Remediation
 
 on:
-  # ✅ 自动触发：AI Review 评论发布后立即触发（最可靠）
-  pull_request_review_comment:
-    types: [created]
-  
-  # Fallback: workflow_run（如果上面失败）
+  # ✅ 自动触发：AI Review 完成后触发
   workflow_run:
     workflows: ["Claude AI Code Review"]
     types:
@@ -42,22 +38,12 @@ jobs:
             let prNumber = null;
             let branchName = null;
             
-            // ✅ 支持 pull_request_review_comment 触发（最可靠）
-            if (context.eventName === 'pull_request_review_comment') {
-              prNumber = context.payload.pull_request.number;
-              branchName = context.payload.pull_request.head.ref;
-              console.log(`Triggered by review comment on PR #${prNumber}`);
-              console.log(`Branch: ${branchName}`);
-            }
-            // ✅ 支持 workflow_run 自动触发（fallback）
-            else if (context.eventName === 'workflow_run') {
-              const workflowName = context.payload.workflow_run.name;
+            // ✅ workflow_run 自动触发
+            if (context.eventName === 'workflow_run') {
               const conclusion = context.payload.workflow_run.conclusion;
-              const headSha = context.payload.workflow_run.head_sha;
               const headBranch = context.payload.workflow_run.head_branch;
               
-              console.log(`Triggered by workflow_run: ${workflowName} (${conclusion})`);
-              console.log(`Head SHA: ${headSha}`);
+              console.log(`Triggered by workflow_run (${conclusion})`);
               console.log(`Head Branch: ${headBranch}`);
               
               // 只处理成功的 review
@@ -67,31 +53,31 @@ jobs:
                 return;
               }
               
-              // 使用 Search API 查找 PR
+              // ✅ 直接用 head_branch 作为分支名
+              branchName = headBranch;
+              
+              // ✅ 用 Search API 获取 PR 号
               try {
                 const { data: searchResult } = await github.rest.search.issuesAndPullRequests({
-                  q: `repo:${context.repo.owner}/${context.repo.repo} type:pr state:open sha:${headSha}`
+                  q: `repo:${context.repo.owner}/${context.repo.repo} type:pr state:open head:${headBranch}`
                 });
                 
                 if (searchResult.total_count > 0) {
                   prNumber = searchResult.items[0].number;
-                  branchName = searchResult.items[0].head.ref || headBranch;
-                  console.log(`Found PR #${prNumber} from Search API`);
+                  console.log(`Found PR #${prNumber} for branch ${headBranch}`);
                 }
               } catch (error) {
                 console.log(`Search API failed: ${error.message}`);
               }
               
-              // Fallback
+              // 如果找不到 PR 号，用分支名继续（Get Review Comments 会处理）
               if (!prNumber) {
-                console.log('No PR found, skipping');
-                core.setOutput('skip', 'true');
-                return;
+                console.log(`No PR found, using branch ${headBranch}`);
+                // 尝试从分支名推断 PR（如果是 test/xxx 格式）
+                prNumber = null;  // 后面步骤会处理
               }
-              
-              console.log(`PR #${prNumber} on branch ${branchName}`);
             }
-            // ✅ 支持 workflow_dispatch 手动触发
+            // ✅ workflow_dispatch 手动触发
             else if (context.eventName === 'workflow_dispatch') {
               prNumber = context.payload.inputs.pr_number;
               if (!prNumber) {
@@ -107,10 +93,18 @@ jobs:
       
       # ✅ Checkout PR 分支（而不是 main）
       - name: Checkout PR Branch
-        if: steps.get-pr-info.outputs.skip != 'true'
+        if: steps.get-pr-info.outputs.skip != 'true' && steps.get-pr-info.outputs.branch != ''
         uses: actions/checkout@v4
         with:
-          ref: ${{ steps.get-pr-info.outputs.branch || github.head_ref }}
+          ref: ${{ steps.get-pr-info.outputs.branch }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      # ✅ 如果没有分支名，用 github.head_ref（fallback）
+      - name: Checkout (Fallback)
+        if: steps.get-pr-info.outputs.skip != 'true' && steps.get-pr-info.outputs.branch == ''
+        uses: actions/checkout@v4
+        with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
       
@@ -131,26 +125,54 @@ jobs:
       
       - name: Get PR Review Comments
         id: get-comments
-        if: steps.get-pr-number.outputs.skip != 'true'
+        if: steps.get-pr-info.outputs.skip != 'true'
         env:
-          PR_NUMBER: ${{ steps.get-pr-number.outputs.pr_number }}
+          PR_NUMBER: ${{ steps.get-pr-info.outputs.pr_number }}
+          BRANCH_NAME: ${{ steps.get-pr-info.outputs.branch }}
         uses: actions/github-script@v7
         with:
           script: |
-            const prNumber = parseInt(process.env.PR_NUMBER);
+            let prNumber = parseInt(process.env.PR_NUMBER || '0');
+            const branchName = process.env.BRANCH_NAME;
+            
+            // ✅ 如果 PR 号为空，尝试从分支名获取
+            if (!prNumber && branchName) {
+              console.log(`PR number not found, trying to get from branch ${branchName}...`);
+              try {
+                const { data: prs } = await github.rest.pulls.list({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  head: `${context.repo.owner}:${branchName}`,
+                  state: 'open'
+                });
+                
+                if (prs.length > 0) {
+                  prNumber = prs[0].number;
+                  console.log(`Found PR #${prNumber} for branch ${branchName}`);
+                }
+              } catch (error) {
+                console.log(`Failed to get PR from branch: ${error.message}`);
+              }
+            }
+            
+            if (!prNumber) {
+              console.log('No PR number available, skipping');
+              core.setOutput('skip', 'true');
+              return;
+            }
             
             console.log(`Fetching review comments for PR #${prNumber}`);
             
-            // ✅ 修复：使用正确的 API 获取代码行上的审查评论
+            // ✅ 使用正确的 API 获取代码行上的审查评论
             const { data: comments } = await github.rest.pulls.listReviewComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: parseInt(prNumber)
+              pull_number: prNumber
             });
             
             console.log(`Found ${comments.length} review comments`);
             
-            // ✅ 修复：直接使用 API 返回的字段，不用正则解析
+            // ✅ 直接使用 API 返回的字段，不用正则解析
             const reviewComments = comments
               .filter(c => c.user.login === 'github-actions[bot]')
               .filter(c => c.body.includes('[qwen-review]'))
@@ -182,10 +204,11 @@ jobs:
             
             core.setOutput('comments', JSON.stringify(reviewComments));
             core.setOutput('count', reviewComments.length);
+            core.setOutput('skip', 'false');
       
       - name: Check if Review Found Issues
         id: check-issues
-        if: steps.get-pr-number.outputs.skip != 'true'
+        if: steps.get-pr-info.outputs.skip != 'true' && steps.get-comments.outputs.skip != 'true'
         env:
           COMMENT_COUNT: ${{ steps.get-comments.outputs.count }}
         uses: actions/github-script@v7
@@ -202,10 +225,10 @@ jobs:
             }
       
       - name: Add Comment (No Issues)
-        if: steps.check-issues.outputs.skip == 'true' && steps.get-pr-number.outputs.skip != 'true'
+        if: steps.check-issues.outputs.skip == 'true' && steps.get-pr-info.outputs.skip != 'true'
         uses: actions/github-script@v7
         env:
-          PR_NUMBER: ${{ steps.get-pr-number.outputs.pr_number }}
+          PR_NUMBER: ${{ steps.get-pr-info.outputs.pr_number }}
         with:
           script: |
             const prNumber = parseInt(process.env.PR_NUMBER);
@@ -226,9 +249,9 @@ jobs:
           ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'qwen3.5-plus' }}
           REVIEW_COMMENTS: ${{ steps.get-comments.outputs.comments }}
           MAX_FIX_FILES: ${{ github.event.inputs.max_files || '3' }}
-          PR_NUMBER: ${{ steps.get-pr-number.outputs.pr_number }}
+          PR_NUMBER: ${{ steps.get-pr-info.outputs.pr_number }}
         run: |
-          echo "🤖 Running AI Auto-Fix for PR #${{ steps.get-pr-number.outputs.pr_number }}..."
+          echo "🤖 Running AI Auto-Fix for PR #${{ steps.get-pr-info.outputs.pr_number }}..."
           echo "Review comments count: ${{ steps.get-comments.outputs.count }}"
           # 只捕获 stdout 到 JSON 文件，stderr 正常显示
           python3 scripts/auto-fix.py > auto-fix-result.json || echo '{"success": false, "error": "Script failed"}' > auto-fix-result.json
