@@ -49,14 +49,18 @@ jobs:
           echo "================================="
       
       - name: Run ReviewDog
+        if: always()
         env:
           REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "🐶 Running ReviewDog..."
-          
+          echo "=== claude-review-output.json content ==="
+          cat claude-review-output.json 2>/dev/null || echo "File not found"
+          echo "==========================================="
+
           # 下载 reviewdog
           curl -sfL https://raw.githubusercontent.com/reviewdog/reviewdog/master/install.sh | sh -s -- -b ./bin/ latest
-          
+
           # 运行 reviewdog，使用 rdjson 格式
           ./bin/reviewdog \
             -f=rdjson \

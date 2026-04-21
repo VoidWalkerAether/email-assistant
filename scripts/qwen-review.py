@@ -65,8 +65,10 @@ async def call_claude_async(code_content, filename):
 代码内容：
 ```python
 {code_content}
+```
 
 请以 JSON 格式返回审查结果，格式如下：
+```json
 {{
   "issues": [
     {{
@@ -77,6 +79,7 @@ async def call_claude_async(code_content, filename):
     }}
   ]
 }}
+```
 
 如果没有问题，返回 {{"issues": []}}。
 只返回 JSON，不要其他内容，不要用 markdown 包裹。"""
@@ -188,13 +191,13 @@ def main():
     """主函数 - 输出 RDJSON 格式（纯 JSON 到 stdout，日志到 stderr）"""
     changed_files = get_changed_files()
     all_diagnostics = []
-    
+
     print(f"🔍 Found {len(changed_files)} changed files", file=sys.stderr)
-    
+
     # 只审查 Python 文件
     py_files = [f for f in changed_files if f.endswith('.py')]
     print(f"🐍 Found {len(py_files)} Python files to review", file=sys.stderr)
-    
+
     for filepath in py_files:
         content = read_file_content(filepath)
         if not content:
@@ -204,7 +207,11 @@ def main():
         print(f"[INFO] Reviewing {filepath} ({len(content)} bytes)...", file=sys.stderr)
         issues = call_claude_api(content, filepath)
         print(f"[INFO]   Found {len(issues)} issues in {filepath}", file=sys.stderr)
-        
+
+        # 打印每个 issue 详情
+        for i, issue in enumerate(issues):
+            print(f"[ISSUE #{i+1}] Line {issue.get('line', '?')}: {issue.get('message', '?')} ({issue.get('severity', '?')})", file=sys.stderr)
+
         for issue in issues:
             diagnostic = {
                 "message": issue.get('message', 'Unknown issue'),
@@ -223,7 +230,10 @@ def main():
                 }
             }
             all_diagnostics.append(diagnostic)
-    
+
+    if not all_diagnostics:
+        print("[WARN] No issues found by AI review", file=sys.stderr)
+
     # 只输出纯 JSON 到 stdout（ReviewDog 需要）
     # 不用 indent，输出单行 JSON
     print(json.dumps({"diagnostics": all_diagnostics}))
