@@ -53,13 +53,72 @@ def read_file_content(filepath):
         return ""
 
 
-async def call_claude_async(code_content, filename):
+def extract_json_object(text):
+    """从文本中提取 JSON 对象，支持嵌套结构"""
+    text = text.strip()
+    
+    # 尝试直接解析
+    try:
+        result = json.loads(text)
+        return result
+    except json.JSONDecodeError:
+        pass
+    
+    # 尝试提取 markdown 代码块
+    code_block_match = re.search(r'```(?:json)?\s*({.*?})\s*```', text, re.DOTALL)
+    if code_block_match:
+        try:
+            return json.loads(code_block_match.group(1))
+        except json.JSONDecodeError:
+            pass
+    
+    # 使用栈匹配大括号来处理嵌套结构
+    start_idx = text.find('{')
+    if start_idx == -1:
+        return None
+    
+    stack = []
+    in_string = False
+    escape_next = False
+    
+    for i, char in enumerate(text[start_idx:], start_idx):
+        if escape_next:
+            escape_next = False
+            continue
+        
+        if char == '\\' and in_string:
+            escape_next = True
+            continue
+        
+        if char == '"' and not escape_next:
+            in_string = not in_string
+            continue
+        
+        if in_string:
+            continue
+        
+        if char == '{':
+            stack.append(i)
+        elif char == '}':
+            if len(stack) == 1:
+                json_str = text[start_idx:i+1]
+                try:
+                    return json.loads(json_str)
+                except json.JSONDecodeError:
+                    pass
+                stack.pop()
+            elif stack:
+                stack.pop()
+    
+    return None
+
+
+async def call_claude_async(code_content, filename, timeout=120):
     """使用 Claude 进行代码审核（通过阿里云代理）"""
 
     auth_token = os.environ.get('ANTHROPIC_AUTH_TOKEN')
     base_url = os.environ.get('ANTHROPIC_BASE_URL', 'https://coding.dashscope.aliyuncs.com/apps/anthropic')
-    model = os.environ.get('ANTHROPIC_MODEL', 'qwen3-coder-plus')
-    small_model = os.environ.get('ANTHROPIC_SMALL_FAST_MODEL', 'qwen3-coder-plus')
+    model = os.environ.get('CODING_MODEL', 'qwen3-coder-plus')
 
     logger.debug(f"Config: model={model}, base_url={base_url}, token_set={bool(auth_token)}")
 
@@ -97,32 +156,31 @@ async def call_claude_async(code_content, filename):
 如果没有问题，返回 {{"issues": []}}。
 只返回 JSON，不要其他内容，不要用 markdown 包裹。"""
 
-    options = ClaudeAgentOptions(
-        system_prompt="你是一个专业的代码审查助手，擅长发现代码中的问题和改进建议。请用中文回复。",
-        max_turns=1,
-        model=model
-    )
-
     try:
         full_response = ""
         turn_count = 0
         message_count = 0
 
         logger.debug("Starting query loop...")
-        async for message in query(prompt=prompt, options=options):
-            message_count += 1
-            logger.debug(f"Received message #{message_count}: {type(message).__name__}")
+        async with asyncio.timeout(timeout):
+            async for message in query(prompt=prompt, options=ClaudeAgentOptions(
+                system_prompt="你是一个专业的代码审查助手，请用中文返回 JSON 格式的审查结果。",
+                max_turns=1,
+                model=model
+            )):
+                message_count += 1
+                logger.debug(f"Received message #{message_count}: {type(message).__name__}")
 
-            if isinstance(message, AssistantMessage):
-                turn_count += 1
-                logger.debug(f"AssistantMessage turn {turn_count}, content blocks: {len(message.content)}")
-                for i, block in enumerate(message.content):
-                    logger.debug(f"  Block {i}: {type(block).__name__}")
-                    if isinstance(block, TextBlock):
-                        full_response += block.text
-                        logger.debug(f"  Appended {len(block.text)} chars")
-            else:
-                logger.debug(f"Skipping unknown message type: {type(message).__name__}")
+                if isinstance(message, AssistantMessage):
+                    turn_count += 1
+                    logger.debug(f"AssistantMessage turn {turn_count}, content blocks: {len(message.content)}")
+                    for i, block in enumerate(message.content):
+                        logger.debug(f"  Block {i}: {type(block).__name__}")
+                        if isinstance(block, TextBlock):
+                            full_response += block.text
+                            logger.debug(f"  Appended {len(block.text)} chars")
+                else:
+                    logger.debug(f"Skipping unknown message type: {type(message).__name__}")
 
         logger.debug(f"Total messages: {message_count}, turns: {turn_count}")
         logger.debug(f"Full response length: {len(full_response)} chars")
@@ -134,45 +192,19 @@ async def call_claude_async(code_content, filename):
         preview = full_response[:500] + "..." if len(full_response) > 500 else full_response
         logger.debug(f"Response preview:\n{preview}")
 
-        logger.debug("Attempting JSON parse method 1: direct parse")
-        try:
-            result = json.loads(full_response.strip())
-            logger.debug(f"Direct parse successful, found {len(result.get('issues', []))} issues")
-            return result.get('issues', [])
-        except json.JSONDecodeError as e:
-            logger.debug(f"Direct parse failed: {e}")
-            pass
-
-        logger.debug("Attempting JSON parse method 2: markdown code block")
-        code_block_match = re.search(r'```(?:json)?\s*({.*?})\s*```', full_response, re.DOTALL)
-        if code_block_match:
-            logger.debug("Found markdown code block")
-            try:
-                result = json.loads(code_block_match.group(1))
-                logger.debug(f"Markdown block parse successful, found {len(result.get('issues', []))} issues")
-                return result.get('issues', [])
-            except json.JSONDecodeError as e:
-                logger.debug(f"Markdown block parse failed: {e}")
-                pass
-        else:
-            logger.debug("No markdown code block found")
-
-        logger.debug("Attempting JSON parse method 3: brace matching")
-        json_match = re.search(r'\{[^{}]*"issues"[^{}]*\}', full_response, re.DOTALL)
-        if json_match:
-            logger.debug("Found brace pattern")
-            try:
-                result = json.loads(json_match.group())
-                logger.debug(f"Brace match parse successful, found {len(result.get('issues', []))} issues")
-                return result.get('issues', [])
-            except json.JSONDecodeError as e:
-                logger.debug(f"Brace match parse failed: {e}")
-                pass
-        else:
-            logger.debug("No brace pattern found")
-
-        logger.error("All JSON parse methods failed")
+        logger.debug("Attempting to extract and parse JSON")
+        result = extract_json_object(full_response)
+        
+        if result and isinstance(result, dict):
+            issues = result.get('issues', [])
+            logger.debug(f"JSON parse successful, found {len(issues)} issues")
+            return issues
+        
+        logger.error("Failed to parse JSON from response")
         logger.error(f"Raw response (first 1000 chars): {full_response[:1000]}")
+        return []
+    except asyncio.TimeoutError:
+        logger.error(f"Request timed out after {timeout} seconds")
         return []
     except Exception as e:
         import traceback
@@ -181,53 +213,109 @@ async def call_claude_async(code_content, filename):
         return []
 
 
-def call_claude_api(code_content, filename):
+def call_claude_api(code_content, filename, timeout=120):
     """调用 Claude API 进行代码审核（包装异步函数）"""
     try:
         loop = asyncio.get_running_loop()
         logger.debug("call_claude_api: running in existing event loop")
-        return loop.run_until_complete(call_claude_async(code_content, filename))
+        return asyncio.wait_for(
+            call_claude_async(code_content, filename, timeout),
+            timeout=timeout
+        )
     except RuntimeError:
         logger.debug("call_claude_api: creating new event loop")
-        return asyncio.run(call_claude_async(code_content, filename))
+        return asyncio.run(call_claude_async(code_content, filename, timeout))
+
+
+def validate_severity(severity):
+    """校验 severity 字段，确保为合法值"""
+    valid_severities = {'error', 'warning', 'info'}
+    if severity and severity.lower() in valid_severities:
+        return severity.lower()
+    return 'warning'
+
+
+async def review_file_async(filepath, content, semaphore):
+    """异步审查单个文件"""
+    async with semaphore:
+        issues = await call_claude_async(content, filepath)
+        return filepath, issues
+
+
+async def review_all_files_async(py_files, max_concurrent=3):
+    """并发审查所有文件，限制并发数量"""
+    semaphore = asyncio.Semaphore(max_concurrent)
+    tasks = []
+    
+    for filepath in py_files:
+        content = read_file_content(filepath)
+        if content:
+            tasks.append(review_file_async(filepath, content, semaphore))
+        else:
+            logger.warning(f"Skipping {filepath}: empty or unreadable")
+    
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    file_results = {}
+    for result in results:
+        if isinstance(result, Exception):
+            logger.error(f"Review task failed: {result}")
+        else:
+            filepath, issues = result
+            file_results[filepath] = issues
+    
+    return file_results
 
 
 def main():
     """主函数 - 输出 RDJSON 格式（纯 JSON 到 stdout，日志到 stderr）"""
     changed_files = get_changed_files()
-    all_diagnostics = []
+    
+    if not changed_files:
+        logger.warning("No changed files found")
+        print(json.dumps({"diagnostics": []}, ensure_ascii=False))
+        return
 
     logger.info(f"Found {len(changed_files)} changed files")
 
     py_files = [f for f in changed_files if f.endswith('.py')]
     logger.info(f"Found {len(py_files)} Python files to review")
 
-    for filepath in py_files:
-        content = read_file_content(filepath)
-        if not content:
-            logger.warning(f"Skipping {filepath}: empty or unreadable")
-            continue
+    if not py_files:
+        logger.warning("No Python files to review")
+        print(json.dumps({"diagnostics": []}, ensure_ascii=False))
+        return
 
-        logger.info(f"Reviewing {filepath} ({len(content)} bytes)...")
-        issues = call_claude_api(content, filepath)
+    # 使用异步方式并发审查所有文件
+    all_diagnostics = []
+    file_results = asyncio.run(review_all_files_async(py_files))
+
+    for filepath, issues in file_results.items():
+        logger.info(f"Reviewing {filepath}...")
         logger.info(f"  Found {len(issues)} issues in {filepath}")
 
         for i, issue in enumerate(issues):
             logger.info(f"[ISSUE #{i+1}] Line {issue.get('line', '?')}: {issue.get('message', '?')} ({issue.get('severity', '?')})")
 
         for issue in issues:
+            line = issue.get('line', 1)
+            column = issue.get('column') or 1
             diagnostic = {
                 "message": issue.get('message', 'Unknown issue'),
                 "location": {
                     "path": filepath,
                     "range": {
                         "start": {
-                            "line": issue.get('line', 1),
-                            "column": issue.get('column') or 1
+                            "line": line,
+                            "column": column
+                        },
+                        "end": {
+                            "line": line,
+                            "column": column
                         }
                     }
                 },
-                "severity": issue.get('severity', 'warning'),
+                "severity": validate_severity(issue.get('severity')),
                 "source": {
                     "name": "qwen-review"
                 }
