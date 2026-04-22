@@ -35,7 +35,14 @@ jobs:
             let prNumber = null;
             let branchName = null;
 
-            if (context.eventName === 'workflow_run') {
+            // pull_request 事件（临时触发用）
+            if (context.eventName === 'pull_request') {
+              prNumber = context.payload.pull_request.number;
+              branchName = context.payload.pull_request.head.ref;
+              console.log(`Triggered by pull_request for PR #${prNumber}`);
+            }
+            // workflow_run 事件（正常触发）
+            else if (context.eventName === 'workflow_run') {
               const headBranch = context.payload.workflow_run.head_branch;
               const conclusion = context.payload.workflow_run.conclusion;
               branchName = headBranch;
@@ -55,7 +62,9 @@ jobs:
               } catch (error) {
                 console.log(`Search API failed: ${error.message}`);
               }
-            } else if (context.eventName === 'workflow_dispatch') {
+            }
+            // workflow_dispatch 事件（手动触发）
+            else if (context.eventName === 'workflow_dispatch') {
               prNumber = parseInt(context.payload.inputs.pr_number);
               console.log(`Manual trigger for PR #${prNumber}`);
             }
