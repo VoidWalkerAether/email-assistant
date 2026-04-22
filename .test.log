@@ -1,0 +1,63 @@
+Run echo "🔍 Running lint..."
+🔍 Running lint...
+Requirement already satisfied: flake8 in /opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages (7.3.0)
+Requirement already satisfied: mccabe<0.8.0,>=0.7.0 in /opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages (from flake8) (0.7.0)
+Requirement already satisfied: pycodestyle<2.15.0,>=2.14.0 in /opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages (from flake8) (2.14.0)
+Requirement already satisfied: pyflakes<3.5.0,>=3.4.0 in /opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages (from flake8) (3.4.0)
+src/email_utils.py:3:1: F401 're' imported but unused
+src/email_utils.py:4:1: F401 'os' imported but unused
+src/email_utils.py:26:5: F841 local variable 'unused_var' is assigned to but never used
+Error: Process completed with exit code 1.
+
+
+
+un echo "🐶 Running ReviewDog..."
+🐶 Running ReviewDog...
+=== claude-review-output.json content ===
+{"diagnostics": [{"message": "逻辑错误：当检测到已有事件循环运行时仍调用 asyncio.run() 会导致 RuntimeError。应使用 await 或 create_task 而非 asyncio.run()", "location": {"path": "scripts/qwen-review.py", "range": {"start": {"line": 264, "column": 9}, "end": {"line": 264, "column": 9}}}, "severity": "error", "source": {"name": "claude-review"}}, {"message": "死代码：determine_column 函数定义了但从未在任何地方被调用", "location": {"path": "scripts/qwen-review.py", "range": {"start": {"line": 280, "column": 1}, "end": {"line": 280, "column": 1}}}, "severity": "warning", "source": {"name": "claude-review"}}, {"message": "潜在 bug：keywords 列表包含 'def ' 但检查时使用 'def ' in message.lower()，由于 message 是中文描述，此逻辑可能永远不匹配", "location": {"path": "scripts/qwen-review.py", "range": {"start": {"line": 285, "column": 12}, "end": {"line": 285, "column": 12}}}, "severity": "warning", "source": {"name": "claude-review"}}, {"message": "命名混淆：函数名为 call_claude_async 但默认模型是 'qwen3-coder-plus'（Qwen 模型而非 Claude）", "location": {"path": "scripts/qwen-review.py", "range": {"start": {"line": 181, "column": 5}, "end": {"line": 181, "column": 5}}}, "severity": "info", "source": {"name": "claude-review"}}, {"message": "重复验证：max_concurrent 范围验证在 review_all_files_async 和 main 函数中重复执行", "location": {"path": "scripts/qwen-review.py", "range": {"start": {"line": 346, "column": 5}, "end": {"line": 346, "column": 5}}}, "severity": "info", "source": {"name": "claude-review"}}, {"message": "逻辑问题：在调用 validate_issue 验证之前就访问 issue 字段并打印日志，可能访问无效数据", "location": {"path": "scripts/qwen-review.py", "range": {"start": {"line": 422, "column": 9}, "end": {"line": 422, "column": 9}}}, "severity": "warning", "source": {"name": "claude-review"}}, {"message": "潜在问题：JSON 解析失败后仍执行 stack.pop() 继续搜索，可能导致错误的匹配结果", "location": {"path": "scripts/qwen-review.py", "range": {"start": {"line": 138, "column": 13}, "end": {"line": 138, "column": 13}}}, "severity": "warning", "source": {"name": "claude-review"}}, {"message": "冗余代码：severity 在 validate_issue 中已转为小写，此处再次调用 .lower() 是多余的", "location": {"path": "scripts/qwen-review.py", "range": {"start": {"line": 326, "column": 1}, "end": {"line": 326, "column": 1}}}, "severity": "info", "source": {"name": "claude-review"}}, {"message": "潜在问题：os.path.exists(f) 对于新添加但未 checkout 的文件可能返回 False，导致漏检", "location": {"path": "scripts/qwen-review.py", "range": {"start": {"line": 46, "column": 5}, "end": {"line": 46, "column": 5}}}, "severity": "info", "source": {"name": "claude-review"}}, {"message": "异常处理不完整：asyncio.CancelledError 在 Python 3.8+ 应使用 asyncio.exceptions.CancelledError", "location": {"path": "scripts/qwen-review.py", "range": {"start": {"line": 247, "column": 16}, "end": {"line": 247, "column": 16}}}, "severity": "info", "source": {"name": "claude-review"}}, {"message": "邮箱验证过于简单，仅检查是否包含 @ 符号，可能接受无效邮箱地址", "location": {"path": "src/email_utils.py", "range": {"start": {"line": 14, "column": 1}, "end": {"line": 14, "column": 1}}}, "severity": "warning", "source": {"name": "claude-review"}}, {"message": "变量名 'x' 不具描述性，建议使用更有意义的名称如 'email_list'", "location": {"path": "src/email_utils.py", "range": {"start": {"line": 21, "column": 1}, "end": {"line": 21, "column": 1}}}, "severity": "info", "source": {"name": "claude-review"}}, {"message": "变量 'unused_var' 定义后从未使用，应删除", "location": {"path": "src/email_utils.py", "range": {"start": {"line": 27, "column": 1}, "end": {"line": 27, "column": 1}}}, "severity": "warning", "source": {"name": "claude-review"}}, {"message": "使用魔术数字 254，应定义为命名常量或使用更清晰的表达", "location": {"path": "src/email_utils.py", "range": {"start": {"line": 28, "column": 1}, "end": {"line": 28, "column": 1}}}, "severity": "warning", "source": {"name": "claude-review"}}, {"message": "硬编码密码 'hardcoded_password_123'，存在严重安全风险", "location": {"path": "src/email_utils.py", "range": {"start": {"line": 36, "column": 1}, "end": {"line": 36, "column": 1}}}, "severity": "error", "source": {"name": "claude-review"}}, {"message": "在日志中打印密码会泄露敏感信息，存在安全风险", "location": {"path": "src/email_utils.py", "range": {"start": {"line": 38, "column": 1}, "end": {"line": 38, "column": 1}}}, "severity": "error", "source": {"name": "claude-review"}}, {"message": "域名验证逻辑过于简单，仅检查是否包含 '.'，应验证空字符串和非法字符", "location": {"path": "src/email_utils.py", "range": {"start": {"line": 43, "column": 1}, "end": {"line": 43, "column": 1}}}, "severity": "warning", "source": {"name": "claude-review"}}, {"message": "if-else 返回布尔值可简化为 'return \".\" in domain'", "location": {"path": "src/email_utils.py", "range": {"start": {"line": 45, "column": 1}, "end": {"line": 45, "column": 1}}}, "severity": "info", "source": {"name": "claude-review"}}]}
+===========================================
+reviewdog/reviewdog info Detected Platform: linux/amd64
+reviewdog/reviewdog info checking GitHub for latest tag
+reviewdog/reviewdog info Resolved version: 0.21.0 (tag: v0.21.0)
+reviewdog/reviewdog info Downloading https://github.com/reviewdog/reviewdog/releases/download/v0.21.0/reviewdog_0.21.0_Linux_x86_64.tar.gz
+reviewdog/reviewdog info Downloading checksums from https://github.com/reviewdog/reviewdog/releases/download/v0.21.0/checksums.txt
+reviewdog/reviewdog info Verifying checksum ...
+reviewdog/reviewdog info Extracting reviewdog_0.21.0_Linux_x86_64.tar.gz...
+reviewdog/reviewdog info Installing binary to ./bin//reviewdog
+reviewdog/reviewdog info reviewdog installation complete!
+message:"邮箱验证过于简单，仅检查是否包含 @ 符号，可能接受无效邮箱地址"  location:{path:"src/email_utils.py"  range:{start:{line:14  column:1}  end:{line:14  column:1}}}  source:{name:"claude-review"}
+message:"变量名 'x' 不具描述性，建议使用更有意义的名称如 'email_list'"  location:{path:"src/email_utils.py"  range:{start:{line:21  column:1}  end:{line:21  column:1}}}  source:{name:"claude-review"}
+message:"变量 'unused_var' 定义后从未使用，应删除"  location:{path:"src/email_utils.py"  range:{start:{line:27  column:1}  end:{line:27  column:1}}}  source:{name:"claude-review"}
+message:"使用魔术数字 254，应定义为命名常量或使用更清晰的表达"  location:{path:"src/email_utils.py"  range:{start:{line:28  column:1}  end:{line:28  column:1}}}  source:{name:"claude-review"}
+message:"硬编码密码 'hardcoded_password_123'，存在严重安全风险"  location:{path:"src/email_utils.py"  range:{start:{line:36  column:1}  end:{line:36  column:1}}}  source:{name:"claude-review"}
+message:"在日志中打印密码会泄露敏感信息，存在安全风险"  location:{path:"src/email_utils.py"  range:{start:{line:38  column:1}  end:{line:38  column:1}}}  source:{name:"claude-review"}
+message:"域名验证逻辑过于简单，仅检查是否包含 '.'，应验证空字符串和非法字符"  location:{path:"src/email_utils.py"  range:{start:{line:43  column:1}  end:{line:43  column:1}}}  source:{name:"claude-review"}
+message:"if-else 返回布尔值可简化为 'return \".\" in domain'"  location:{path:"src/email_utils.py"  range:{start:{line:45  column:1}  end:{line:45  column:1}}}  source:{name:"claude-review"}
+
+
+
+
+1s
+Run actions/github-script@v7
+Fetching review comments for PR #16
+Found 8 review comments
+Filtered to 0 qwen-review comments
+0s
+Run actions/github-script@v7
+✅ No review issues found, skipping auto-fix
+0s
+Run actions/github-script@v7
+0s
+0s
+Run actions/github-script@v7
+Error parsing result: ENOENT: no such file or directory, open 'auto-fix-result.json'
+0s
+1s
+Run actions/github-script@v7
+
+
+
+
+Run actions/github-script@v7
+Triggered by workflow_run (success)
+Head Branch: main
