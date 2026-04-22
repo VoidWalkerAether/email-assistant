@@ -178,11 +178,17 @@ jobs:
             });
             
             console.log(`Found ${comments.length} review comments`);
-            
-            // ✅ 过滤 bot 发布的代码行评论（不限定 marker 格式）
+
+            // Debug: show comment structure to diagnose filter
+            if (comments.length > 0) {
+              const c = comments[0];
+              console.log('Sample comment:', JSON.stringify({id: c.id, user: c.user?.login, path: c.path, line: c.line, body_preview: (c.body||'').substring(0,100)}, null, 2));
+            }
+
+            // Filter: bot comments on code lines
             const reviewComments = comments
               .filter(c => c.user.login === 'github-actions[bot]')
-              .filter(c => c.path && c.line)
+              .filter(c => c.path !== undefined && c.line !== undefined)
               .map(c => {
                 // 清理评论 body，提取问题描述
                 const body = c.body
