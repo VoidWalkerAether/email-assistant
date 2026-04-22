@@ -3,25 +3,54 @@
 > 📅 开始日期：2026-04-07  
 > **官方文档**：https://docs.github.com/zh/actions/get-started/quickstart  
 > **仓库**：https://github.com/VoidWalkerAether/email-assistant  
-> **本地路径**：`/Users/caiwei/workbench/claude-agent-sdk-demos/others/email-assistant`
+> **本地路径**：`/Users/caiwei/workbench/claude-agent-sdk-demos/githubactions/email-assistant`
 
 ---
 
 ## 📊 当前进度总览
 
-| 阶段 | 步骤 | 任务 | 状态 | 完成日期 |
-|------|------|------|------|---------|
-| **阶段 1** | Step 1 | 创建 GitHub 仓库 | ✅ 完成 | 2026-04-07 |
-| **阶段 1** | Step 2 | 创建第一个 Workflow | ✅ 完成 | 2026-04-07 |
-| **阶段 1** | Step 3 | 学习 GitHub Actions | ✅ 完成 | 2026-04-07 |
-| **阶段 1** | Step 4 | Harness 核心配置 | ✅ 完成 | 2026-04-07 |
-| **阶段 2** | Step 5 | PR 流程验证 | ✅ 完成 | 2026-04-08 |
-| **阶段 2** | Step 6 | Enforce 步骤验证 | ✅ 完成 | 2026-04-09 |
-| **阶段 3** | Step 7 | AI Review 集成 | ❌ 未开始 | - |
-| **阶段 3** | Step 8 | Lint 检查启用 | ❌ 未开始 | - |
+### Harness Engineering 8 步 Control-Plane Pattern
 
-**当前状态**：✅ Harness 核心功能验证完成（High Risk 正确阻止）  
-**下一步**：创建 PR 验证 High Risk 阻止 Merge
+| 步骤 | 功能 | 状态 | 完成日期 |
+|------|------|------|---------|
+| 1. Risk Contract | 定义规则，消除歧义 | ✅ 完成 | 2026-04-07 |
+| 2. Preflight Gate | 先拦再跑，省 CI 成本 | ✅ 完成 | 2026-04-08 |
+| 3. SHA Discipline | 只信当前 HEAD 的证据 | ✅ 完成 | 2026-04-21 |
+| 4. Rerun Dedupe | 一个 canonical writer，不重复 | ✅ 完成 | 2026-04-21 |
+| 5. Remediation Loop | Agent 自己修，不绕过 gate | ✅ 完成 | 2026-04-21 |
+| 6. Bot Thread Auto Resolve | 自动清理 bot thread，不碰人的 | ✅ 完成 | 2026-04-22 |
+| 7. Browser Evidence | UI 证据是 CI artifact | ❌ 未开始 | - |
+| 8. Harness Gap Loop | 事故转 test case | ❌ 未开始 | - |
+
+**当前状态**：✅ 6/8 步完成 — Control-Plane 核心闭环已建立 + Bot Thread 自动清理  
+**下一步**：实现 Browser Evidence（Step 7）或 Harness Gap Loop（Step 8）
+
+---
+
+## 📦 项目文件清单
+
+```
+email-assistant/
+├── .github/workflows/
+│   ├── github-actions-demo.yml    # 官方文档：基础 CI 演示
+│   ├── risk-policy-gate.yml       # Harness 扩展：风险门控 + SHA 验证
+│   ├── qwen-review.yml            # AI Review：Claude 代码审查 + ReviewDog
+│   ├── ai-remediation.yml         # AI 自动修复：读取 review 评论 → 生成修复 → push
+│   └── auto-resolve-threads.yml   # Bot Thread 自动解析
+├── harness/
+│   └── risk-contract.json         # 风险合同：定义 high/medium/low 规则和 merge policy
+├── scripts/
+│   ├── qwen-review.py             # AI 审查脚本：并发扫描 + RDJSON 输出
+│   └── auto-fix.py                # AI 修复脚本：读取评论 → 生成修复 → 写文件
+├── src/
+│   ├── __init__.py
+│   └── sender.py                  # 邮件发送模块（High Risk 文件）
+├── tests/
+│   └── test_sender.py             # sender 模块单元测试
+├── requirements.txt
+├── README.md
+└── LOG.md                         # 本日志
+```
 
 ---
 
@@ -110,55 +139,14 @@ jobs:
 | Step 5 | 编写 sender.py | ✅ | High Risk 文件（邮件发送逻辑） |
 | Step 5 | 编写测试用例 | ✅ | `tests/test_sender.py` |
 | Step 5 | 开 PR 验证 | ✅ | Risk Gate 正确识别 High Risk |
-| Step 6 | 添加 Enforce 步骤 | ✅ | 代码完成，待验证 |
-| Step 6 | 验证 Enforce | ⏳ | 待创建 PR 验证 |
-
-### 新增文件
-
-```
-email-assistant/
-├── src/sender.py                  # 邮件发送模块（High Risk）
-├── tests/test_sender.py           # 单元测试
-├── .github/workflows/
-│   └── risk-policy-gate.yml       # 更新：添加 Enforce 步骤
-└── LOG.md                         # 本日志
-```
-
-### 核心代码
-
-#### sender.py（High Risk 文件）
-```python
-"""Email sender module - High Risk"""
-
-def send_email(to: str, subject: str, body: str) -> bool:
-    """Send an email."""
-    print(f"Sending to {to}: {subject}")
-    return True
-
-def validate_email(email: str) -> bool:
-    """Validate email format."""
-    return "@" in email and "." in email
-```
-
-#### risk-policy-gate.yml（Enforce 步骤）
-```yaml
-- name: Enforce Risk Policy
-  run: |
-    RISK_TIER="${{ steps.risk.outputs.riskTier }}"
-    
-    if [ "$RISK_TIER" = "high" ]; then
-      echo "❌ HIGH RISK: Changes require AI code review + manual approval"
-      exit 1  # 失败，阻止 Merge
-    fi
-```
+| Step 6 | 添加 Enforce 步骤 | ✅ | High Risk 正确阻止 Merge |
 
 ### 验证结果
 
 | 测试场景 | 修改文件 | 预期风险 | 实际结果 | 状态 |
 |---------|---------|---------|---------|------|
-| Test 1 | `src/sender.py` + tests | High | ✅ Risk Tier: high, 警告输出 | ✅ 成功 |
-| Test 2 | `.github/workflows/` | Low | ✅ Risk Tier: low | ✅ 成功 |
-| Test 3 | `src/__init__.py` | High | ⏳ 待验证 | ⏳ Pending |
+| Test 1 | `src/sender.py` + tests | High | ✅ Risk Tier: high, 阻止 Merge | ✅ 成功 |
+| Test 2 | `.github/workflows/` | Low | ✅ Risk Tier: low, 快速通过 | ✅ 成功 |
 
 ### 核心洞察
 
@@ -185,30 +173,123 @@ def validate_email(email: str) -> bool:
 
 ---
 
+## 2026-04-21 - Day 14: AI Review + Auto-Fix + SHA Discipline ✅
+
+### 参考文档
+- **Harness Engineering 完整拆解**: `~/myobsidian/03-Resources/素材/收藏/Harness Engineering 完整拆解.md`
+- **Control-Plane Pattern**: Ryan Carson 的 8 步确定性流程
+
+### 完成内容
+
+| 步骤 | 任务 | 状态 | 说明 |
+|------|------|------|------|
+| Step 3 | SHA Discipline | ✅ | PR gate 验证 review SHA 匹配 HEAD |
+| Step 4 | Rerun Dedupe | ✅ | 删除旧评论 + 发布带 SHA marker 的新评论 |
+| Step 5 | Remediation Loop | ✅ | AI 自动修复 review 问题并 push |
+| Step 7 | AI Review 集成 | ✅ | `qwen-review.yml` + `scripts/qwen-review.py` |
+| Step 8 | Lint 检查启用 | ✅ | risk-policy-gate 中集成 flake8 |
+
+### 新增文件
+
+```
+.github/workflows/
+├── qwen-review.yml            # AI Review 工作流
+└── ai-remediation.yml         # AI 自动修复工作流
+scripts/
+├── qwen-review.py             # AI 代码审查脚本
+└── auto-fix.py                # AI 自动修复脚本
+```
+
+### 核心架构
+
+**Control-Plane 闭环**：
+```
+PR 开启
+  │
+  ├── Risk Contract → 判断风险等级
+  ├── Preflight Gate → Tests + Lint
+  ├── AI Review (qwen-review.yml) → 审查代码 + 评论
+  ├── SHA Discipline → 验证 review 匹配 HEAD
+  ├── Remediation Loop → Agent 自修 → 回到 Gate
+  │
+  └── Merge
+```
+
+### 技术要点
+
+1. **AI Review**：
+   - 并发审查多个 Python 文件
+   - 输出 RDJSON 格式 → ReviewDog 集成到 PR
+   - 通过阿里云代理访问 Claude 模型
+
+2. **SHA Discipline**（文章说"这是最大的实战教训"）：
+   - `risk-policy-gate.yml` 轮询 PR 评论
+   - 验证 `<!-- review-status -->` 中的 SHA 与 HEAD 匹配
+   - 3 分钟超时，未匹配则 fail
+
+3. **Remediation Loop**：
+   - `ai-remediation.yml` 由 review workflow 的 `workflow_run` 事件触发
+   - 读取 review 评论 → 按文件分组问题 → AI 生成修复
+   - 限制最多修复 3 个文件，修复后 push 到 PR 分支
+   - push 自动触发完整的 preflight gate 重跑（SHA discipline 闭环）
+
+4. **Rerun Dedupe**：
+   - 先删除所有旧的 `<!-- review-status -->` 评论
+   - 再发布带当前 SHA 的新评论
+   - 避免同一 HEAD 的重复 rerun
+
+---
+
+## 2026-04-22 - Day 15: Bot Thread Auto Resolve (Step 6) ✅
+
+### 参考文档
+- **Harness Engineering 完整拆解**: Step 6 — Bot Thread 的自动 Resolve
+
+### 完成内容
+
+| 步骤 | 任务 | 状态 | 说明 |
+|------|------|------|------|
+| Step 6 | Bot Thread Auto Resolve | ✅ | `auto-resolve-threads.yml` |
+
+### 新增文件
+
+```
+.github/workflows/
+└── auto-resolve-threads.yml    # Bot Thread 自动解析工作流
+```
+
+### 核心逻辑
+
+1. **触发时机**：AI Auto-Remediation 完成后自动触发（`workflow_run`）
+2. **Thread 分组**：按 `in_reply_to_id` 将 review 评论分组为 thread
+3. **人类参与检测**：检查 thread 中是否有非 `github-actions[bot]` 的评论
+   - 有人类参与 → **跳过**（不代替人做决策）
+   - 纯 bot thread → **自动 resolve**
+4. **Resolve 方式**：使用 GitHub GraphQL `resolveReviewThread` mutation
+
+---
+
 ## 📅 下一步计划
 
-### P0 - 必须完成（明天第一步）
+### P0 - 必须完成
 
 | 任务 | 预计时间 | 说明 |
 |------|---------|------|
-| **创建 PR 验证 Test 3** | 10 分钟 | 确认 High Risk 阻止 Merge |
-| **Low Risk 测试** | 10 分钟 | 修改 README，验证快速通过 |
+| **PR 实测 Step 6** | 15 分钟 | 开 PR 验证 bot thread auto-resolve 是否正常工作 |
 
 ### P1 - 核心功能
 
 | 任务 | 预计时间 | 说明 |
 |------|---------|------|
-| 启用真实测试 | 15 分钟 | 取消 pytest 注释 |
-| 启用 Lint 检查 | 15 分钟 | 取消 flake8 注释 |
 | Medium Risk 测试 | 20 分钟 | 验证分层逻辑 |
+| Remediation 收敛性 | 30 分钟 | 添加 max retry / circuit breaker 防无限 loop |
 
 ### P2 - 进阶功能
 
 | 任务 | 说明 |
 |------|------|
-| AI Code Review 集成 | CodeRabbit / Greptile |
-| Browser Evidence | UI 测试验证 |
-| 完整 Control-Plane | 8 步确定性流程 |
+| Harness Gap Loop | 线上事故 → 转 test case → 加入 harness |
+| Browser Evidence | UI 改动的 first-class CI artifact |
 
 ---
 
@@ -292,10 +373,22 @@ git branch -v
 |------|----------|------|
 | 2026-04-07 | 初始创建，基础搭建 | ✅ 完成 |
 | 2026-04-08 | PR 流程验证，Enforce 步骤 | ✅ 完成 |
-| 2026-04-08 | 更新进度总览，记录官方文档链接 | ✅ 完成 |
+| 2026-04-21 | AI Review 集成、Remediation Loop、SHA Discipline | ✅ 完成 |
+| 2026-04-22 | 更新 LOG.md 进度总览（8 步模式） | ✅ 完成 |
+| 2026-04-22 | Bot Thread Auto Resolve (Step 6) | ✅ 完成 |
 
 ---
 
-*Last updated: 2026-04-08 19:05*  
-*Next session: 2026-04-09*  
-*Status: Ready to continue - Step 6 待验证*
+## 📊 与文章建议的"最小可行组合"对比
+
+| 优先级 | 建议 | 状态 |
+|--------|------|------|
+| P0: Risk Contract + SHA 追踪 | 零成本，纯纪律 | ✅ 完成 |
+| P0: Code Review Agent | CodeRabbit/Greptile 等价 | ✅ 完成（自建 qwen-review） |
+| P1: Remediation Loop | Agent 自修 | ✅ 完成 |
+
+---
+
+*Last updated: 2026-04-22*  
+*Next session: PR 实测 Step 6 (Bot Thread Auto Resolve)*  
+*Status: 6/8 步完成*
