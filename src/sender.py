@@ -3,7 +3,7 @@ import re
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from typing import Optional, NamedTuple
+from typing import Optional
 from dataclasses import dataclass
 
 
@@ -146,8 +146,6 @@ def send_email(
         return False, f"Connection error: {e}"
     except OSError as e:
         return False, f"OS error: {e}"
-    except TimeoutError as e:
-        return False, f"Timeout error: {e}"
 
 
 TEST_EMAIL = os.getenv("TEST_EMAIL", "test@example.com")
