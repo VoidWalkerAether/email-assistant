@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Claude Code Review - 使用阿里云代理的 Claude 模型进行代码审核
+Claude Code Review - 使用 Claude 模型进行代码审核
 输出格式：ReviewDog RDJSON (https://github.com/reviewdog/reviewdog/blob/master/proto/rdf/)
 """
 
@@ -18,6 +18,10 @@ from claude_agent_sdk import query, ClaudeAgentOptions, AssistantMessage, TextBl
 
 DEFAULT_TIMEOUT = int(os.environ.get('REVIEW_TIMEOUT', '120'))
 DEFAULT_MAX_CONCURRENT = int(os.environ.get('REVIEW_MAX_CONCURRENT', '3'))
+MAX_FILE_SIZE = 1024 * 1024  # 1MB 最大文件大小限制
+MAX_JSON_DEPTH = 50  # JSON 解析最大深度
+MAX_CONCURRENT_LIMIT = 10  # 最大并发数限制
+MIN_CONCURRENT = 1  # 最小并发数
 
 
 def setup_logging():
@@ -56,8 +60,13 @@ def get_changed_files() -> List[str]:
 
 
 def read_file_content(filepath: str) -> str:
-    """读取文件内容"""
+    """读取文件内容，限制最大文件大小"""
     try:
+        file_size = os.path.getsize(filepath)
+        if file_size > MAX_FILE_SIZE:
+            logger.warning(f"File {filepath} too large ({file_size} bytes), skipping")
+            return ""
+        
         with open(filepath, 'r', encoding='utf-8') as f:
             return f.read()
     except FileNotFoundError as e:
@@ -89,7 +98,7 @@ def extract_json_object(text: str) -> Optional[Dict[str, Any]]:
     except json.JSONDecodeError:
         pass
     
-    # 尝试提取 markdown 代码块
+    # 尝试提取 markdown 代码块 - 使用原始字符串避免转义问题
     code_block_patterns = [
         r'```json\s*({.*?})\s*```',
         r'```\s*({.*?})\s*```',
@@ -120,7 +129,7 @@ def extract_json_object(text: str) -> Optional[Dict[str, Any]]:
         except json.JSONDecodeError:
             pass
     
-    # 使用栈匹配大括号来处理嵌套结构
+    # 使用栈匹配大括号来处理嵌套结构，添加最大深度限制
     start_idx = text.find('{')
     if start_idx == -1:
         return None
@@ -147,6 +156,10 @@ def extract_json_object(text: str) -> Optional[Dict[str, Any]]:
         
         if char == '{':
             stack.append(i)
+            # 检查最大深度限制
+            if len(stack) > MAX_JSON_DEPTH:
+                logger.warning(f"JSON nesting depth exceeded maximum of {MAX_JSON_DEPTH}")
+                return None
         elif char == '}':
             if len(stack) == 1:
                 json_str = text[start_idx:i+1]
@@ -168,11 +181,11 @@ async def call_claude_async(
     filename: str,
     timeout: int = DEFAULT_TIMEOUT
 ) -> List[Dict[str, Any]]:
-    """使用 Claude 进行代码审核（通过阿里云代理）"""
+    """使用 Claude 进行代码审核"""
 
     auth_token = os.environ.get('ANTHROPIC_AUTH_TOKEN')
     base_url = os.environ.get('ANTHROPIC_BASE_URL', 'https://coding.dashscope.aliyuncs.com/apps/anthropic')
-    model = os.environ.get('CODING_MODEL', 'qwen3-coder-plus')
+    model = os.environ.get('CODING_MODEL', 'claude-sonnet-4-20250514')
 
     logger.debug(f"Config: model={model}, base_url={base_url}, token_set={bool(auth_token)}, timeout={timeout}")
 
@@ -281,7 +294,7 @@ def call_claude_api(
 ) -> List[Dict[str, Any]]:
     """调用 Claude API 进行代码审核（包装异步函数）"""
     try:
-        loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()
         logger.debug("call_claude_api: running in existing event loop")
         return asyncio.run(call_claude_async(code_content, filename, timeout))
     except RuntimeError:
@@ -314,6 +327,45 @@ def determine_column(message: str, line_content: Optional[str] = None) -> int:
     return 1
 
 
+def validate_issue(issue: Dict[str, Any], filepath: str, line_count: int) -> Optional[Dict[str, Any]]:
+    """验证 AI 返回的诊断信息"""
+    if not isinstance(issue, dict):
+        logger.warning(f"Invalid issue format: not a dict")
+        return None
+    
+    # 验证 line 字段
+    line = issue.get('line')
+    if not isinstance(line, int) or line < 1 or line > line_count:
+        logger.warning(f"Invalid line number: {line} for {filepath}")
+        return None
+    
+    # 验证 message 字段
+    message = issue.get('message')
+    if not message or not isinstance(message, str):
+        logger.warning(f"Invalid or missing message for {filepath}")
+        return None
+    
+    # 验证 severity 字段
+    severity = issue.get('severity', 'warning')
+    if severity and severity.lower() not in {'error', 'warning', 'info'}:
+        logger.warning(f"Invalid severity: {severity}, defaulting to warning")
+        severity = 'warning'
+    
+    # 验证 column 字段
+    column = issue.get('column')
+    if column is not None:
+        if not isinstance(column, int) or column < 1:
+            logger.warning(f"Invalid column: {column}, defaulting to 1")
+            column = 1
+    
+    return {
+        'line': line,
+        'column': column if column else 1,
+        'message': message,
+        'severity': severity.lower()
+    }
+
+
 async def review_file_async(
     filepath: str,
     content: str,
@@ -330,6 +382,11 @@ async def review_all_files_async(
     max_concurrent: int = DEFAULT_MAX_CONCURRENT
 ) -> Dict[str, List[Dict[str, Any]]]:
     """并发审查所有文件，限制并发数量"""
+    # 验证并发数量范围
+    max_concurrent = max(MIN_CONCURRENT, min(max_concurrent, MAX_CONCURRENT_LIMIT))
+    if max_concurrent != DEFAULT_MAX_CONCURRENT:
+        logger.info(f"Adjusted max_concurrent to {max_concurrent} (within range {MIN_CONCURRENT}-{MAX_CONCURRENT_LIMIT})")
+    
     semaphore = asyncio.Semaphore(max_concurrent)
     tasks = []
     
@@ -372,29 +429,46 @@ def main():
         print(json.dumps({"diagnostics": []}, ensure_ascii=False))
         return
 
-    # 使用异步方式并发审查所有文件
-    all_diagnostics = []
-    max_concurrent = DEFAULT_MAX_CONCURRENT
+    # 验证并发数量范围
+    max_concurrent = max(MIN_CONCURRENT, min(DEFAULT_MAX_CONCURRENT, MAX_CONCURRENT_LIMIT))
     timeout = DEFAULT_TIMEOUT
     
     file_results = asyncio.run(review_all_files_async(py_files, max_concurrent=max_concurrent))
 
+    # 收集所有诊断信息并进行验证
+    all_diagnostics = []
+    valid_severities = {'error', 'warning', 'info'}
+
     for filepath, issues in file_results.items():
         logger.info(f"Reviewing {filepath}...")
+        
+        # 读取文件内容以获取行数用于验证
+        content = read_file_content(filepath)
+        line_count = len(content.splitlines()) if content else 1
+        
         logger.info(f"  Found {len(issues)} issues in {filepath}")
 
         for i, issue in enumerate(issues):
             logger.info(f"[ISSUE #{i+1}] Line {issue.get('line', '?')}: {issue.get('message', '?')} ({issue.get('severity', '?')})")
 
         for issue in issues:
-            line = issue.get('line', 1)
-            # 优先使用 issue 中的 column，否则根据内容推断，最后默认为 1
-            column = issue.get('column')
-            if column is None:
-                column = 1
+            # 验证 issue 数据
+            validated_issue = validate_issue(issue, filepath, line_count)
+            if not validated_issue:
+                logger.warning(f"Skipping invalid issue for {filepath}: {issue}")
+                continue
+            
+            line = validated_issue['line']
+            column = validated_issue['column']
+            severity = validated_issue['severity']
+            message = validated_issue['message']
+            
+            # 额外验证 severity
+            if severity not in valid_severities:
+                severity = 'warning'
             
             diagnostic = {
-                "message": issue.get('message', 'Unknown issue'),
+                "message": message,
                 "location": {
                     "path": filepath,
                     "range": {
@@ -408,9 +482,9 @@ def main():
                         }
                     }
                 },
-                "severity": validate_severity(issue.get('severity')),
+                "severity": severity,
                 "source": {
-                    "name": "qwen-review"
+                    "name": "claude-review"
                 }
             }
             all_diagnostics.append(diagnostic)
