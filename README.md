@@ -35,3 +35,5 @@ This project uses Harness Engineering pattern:
 - `risk-contract.json` defines risk tiers
 - GitHub Actions automatically checks risk level on PR
 - High-risk changes require additional review
+## SHA Discipline Verification
+Test commit at Tue Apr 21 18:35:36 CST 2026

@@ -11,7 +11,55 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
+      - name: Verify Review SHA
+        id: sha-check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.issue.number;
+            const headSha = context.payload.pull_request.head.sha;
+
+            // Poll for a review marker that matches the current HEAD SHA.
+            // Old markers from previous commits are ignored.
+            const maxRetries = 18;      // 3 minutes max (10s interval)
+            const intervalMs = 10000;   // 10 seconds
+            let found = false;
+
+            for (let attempt = 0; attempt < maxRetries; attempt++) {
+              const { data: comments } = await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                per_page: 100
+              });
+
+              for (const c of comments) {
+                if (c.user.login === 'github-actions[bot]'
+                    && c.body.includes('<!-- review-status -->')) {
+                  const match = c.body.match(/sha:([a-f0-9]+)/);
+                  if (match && match[1] === headSha) {
+                    found = true;
+                    console.log(`SHA match: review and HEAD both ${headSha.slice(0, 7)}`);
+                    break;
+                  }
+                }
+              }
+
+              if (found) {
+                break;
+              }
+
+              console.log(`Waiting for review on ${headSha.slice(0, 7)}... retry ${attempt + 1}/${maxRetries}`);
+              await new Promise(r => setTimeout(r, intervalMs));
+            }
+
+            if (!found) {
+              core.setFailed(
+                `SHA Discipline: AI review did not complete for commit ${headSha.slice(0, 7)} within 3 minutes. Check the Claude AI Code Review workflow.`
+              );
+            }
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:

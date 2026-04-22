@@ -1,0 +1,201 @@
+name: Bot Thread Auto-Resolve
+
+on:
+  # 自动触发：AI Auto-Remediation 完成后触发
+  workflow_run:
+    workflows: ["AI Auto-Remediation"]
+    types:
+      - completed
+
+  # 手动触发（调试用）
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Pull Request number'
+        required: true
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  resolve-bot-threads:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Get PR Info
+        id: get-pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            let prNumber = null;
+            let branchName = null;
+
+            // pull_request 事件（临时触发用）
+            if (context.eventName === 'pull_request') {
+              prNumber = context.payload.pull_request.number;
+              branchName = context.payload.pull_request.head.ref;
+              console.log(`Triggered by pull_request for PR #${prNumber}`);
+            }
+            // workflow_run 事件（正常触发）
+            else if (context.eventName === 'workflow_run') {
+              const headBranch = context.payload.workflow_run.head_branch;
+              const conclusion = context.payload.workflow_run.conclusion;
+              branchName = headBranch;
+
+              console.log(`Triggered by workflow_run (${conclusion})`);
+              console.log(`Head Branch: ${headBranch}`);
+
+              // 用 Search API 获取 PR 号
+              try {
+                const { data: searchResult } = await github.rest.search.issuesAndPullRequests({
+                  q: `repo:${context.repo.owner}/${context.repo.repo} type:pr state:open head:${headBranch}`
+                });
+                if (searchResult.total_count > 0) {
+                  prNumber = searchResult.items[0].number;
+                  console.log(`Found PR #${prNumber}`);
+                }
+              } catch (error) {
+                console.log(`Search API failed: ${error.message}`);
+              }
+            }
+            // workflow_dispatch 事件（手动触发）
+            else if (context.eventName === 'workflow_dispatch') {
+              prNumber = parseInt(context.payload.inputs.pr_number);
+              console.log(`Manual trigger for PR #${prNumber}`);
+            }
+
+            core.setOutput('pr_number', prNumber);
+            core.setOutput('branch', branchName);
+
+      - name: Resolve Bot Comment Threads
+        if: steps.get-pr.outputs.pr_number != 'null' && steps.get-pr.outputs.pr_number != ''
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ steps.get-pr.outputs.pr_number }}
+        with:
+          script: |
+            const prNumber = parseInt(process.env.PR_NUMBER);
+            console.log(`Resolving bot threads for PR #${prNumber}`);
+
+            // 获取所有 review comments（代码行上的评论）
+            const { data: comments } = await github.rest.pulls.listReviewComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+
+            console.log(`Total review comments: ${comments.length}`);
+
+            // 按 thread 分组：root comment 的 in_reply_to_id 为 null
+            // reply comment 的 in_reply_to_id 指向 root comment 的 id
+            const threads = {};
+            for (const c of comments) {
+              const threadId = c.in_reply_to_id || c.id;
+              if (!threads[threadId]) {
+                threads[threadId] = [];
+              }
+              threads[threadId].push(c);
+            }
+
+            console.log(`Found ${Object.keys(threads).length} thread(s)`);
+
+            let resolvedCount = 0;
+            let skippedCount = 0;
+
+            // 先筛选出纯 bot thread
+            const botThreadRoots = [];
+            for (const [threadId, threadComments] of Object.entries(threads)) {
+              const hasHumanParticipation = threadComments.some(c => {
+                return c.user.login !== 'github-actions[bot]';
+              });
+
+              if (hasHumanParticipation) {
+                const humans = threadComments
+                  .filter(c => c.user.login !== 'github-actions[bot]')
+                  .map(c => c.user.login)
+                  .join(', ');
+                console.log(`Thread ${threadId}: ⏭️  Skipped: human participated (${humans})`);
+                skippedCount++;
+                continue;
+              }
+
+              const rootComment = threadComments.find(c => c.id === parseInt(threadId)) || threadComments[0];
+              console.log(`Thread ${threadId}: 📝 File: ${rootComment.path}, Line: ${rootComment.line ?? 'null'} (bot-only)`);
+              botThreadRoots.push(rootComment);
+            }
+
+            // 通过 GraphQL 查询每个 comment 对应的 thread node ID
+            // GitHub REST API 没有直接的 resolve 端点
+            // 使用 GraphQL resolveReviewThread mutation 需要 thread 的 node ID（不是 comment 的 node ID）
+            if (botThreadRoots.length > 0) {
+              // 查询 PR 的 review threads，获取 thread node IDs
+              const { repository: { pullRequest } } = await github.graphql(`
+                query($owner: String!, $repo: String!, $number: Int!) {
+                  repository(owner: $owner, name: $repo) {
+                    pullRequest(number: $number) {
+                      reviewThreads(first: 100) {
+                        nodes {
+                          id
+                          comments(first: 10) {
+                            nodes {
+                              databaseId
+                              url
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              `, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                number: prNumber
+              });
+
+              // 建立 comment databaseId -> thread node ID 的映射
+              const commentToThread = {};
+              for (const thread of pullRequest.reviewThreads.nodes) {
+                for (const comment of thread.comments.nodes) {
+                  commentToThread[comment.databaseId] = thread.id;
+                }
+              }
+
+              // 尝试 resolve 每个 bot thread
+              for (const rootComment of botThreadRoots) {
+                const threadId = commentToThread[rootComment.id];
+                if (!threadId) {
+                  console.log(`  ⚠️  Could not find thread for comment #${rootComment.id}`);
+                  continue;
+                }
+
+                try {
+                  await github.graphql(`
+                    mutation($input: ResolveReviewThreadInput!) {
+                      resolveReviewThread(input: $input) {
+                        thread {
+                          id
+                          isResolved
+                        }
+                      }
+                    }
+                  `, {
+                    input: {
+                      threadId: threadId,
+                      clientMutationId: `auto-resolve-${rootComment.id}`
+                    }
+                  });
+                  console.log(`  ✅ Resolved thread for comment #${rootComment.id}`);
+                  resolvedCount++;
+                } catch (error) {
+                  console.log(`  ⚠️  Failed to resolve comment #${rootComment.id}: ${error.message}`);
+                }
+              }
+            }
+
+            console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+            console.log(`Bot Thread Auto-Resolve Complete`);
+            console.log(`  ✅ Resolved: ${resolvedCount}`);
+            console.log(`  ⏭️  Skipped (human): ${skippedCount}`);
+            console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━`);
