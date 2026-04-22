@@ -1,6 +1,10 @@
 name: Bot Thread Auto-Resolve
 
 on:
+  # 临时触发：让 GitHub 注册这个 workflow
+  pull_request:
+    branches: [main]
+
   # 自动触发：AI Auto-Remediation 完成后触发
   workflow_run:
     workflows: ["AI Auto-Remediation"]
