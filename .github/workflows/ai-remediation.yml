@@ -42,10 +42,17 @@ jobs:
             if (context.eventName === 'workflow_run') {
               const conclusion = context.payload.workflow_run.conclusion;
               const headBranch = context.payload.workflow_run.head_branch;
-              
+
               console.log(`Triggered by workflow_run (${conclusion})`);
               console.log(`Head Branch: ${headBranch}`);
-              
+
+              // ✅ 跳过 main 分支（merge 后的 run 不应该 auto-fix main）
+              if (headBranch === 'main' || !headBranch) {
+                console.log(`Skipping: head_branch is '${headBranch}', not a PR branch`);
+                core.setOutput('skip', 'true');
+                return;
+              }
+
               // 只处理成功的 review
               if (conclusion !== 'success') {
                 console.log(`Skipping: workflow conclusion is ${conclusion}`);
@@ -172,13 +179,14 @@ jobs:
             
             console.log(`Found ${comments.length} review comments`);
             
-            // ✅ 直接使用 API 返回的字段，不用正则解析
+            // ✅ 匹配 reviewdog 发布的评论（不限定特定 marker）
             const reviewComments = comments
               .filter(c => c.user.login === 'github-actions[bot]')
-              .filter(c => c.body.includes('[qwen-review]'))
+              .filter(c => c.body.includes('[claude-review]') || c.body.includes('[qwen-review]'))
               .map(c => {
                 // 清理评论 body，提取问题描述
                 const body = c.body
+                  .replace(/\*\*\[claude-review\]\*\*.*?<br>/, '')
                   .replace(/\*\*\[qwen-review\]\*\*.*?<br>/, '')
                   .replace(/<sub>.*?<\/sub>/, '')
                   .replace(/<!--.*?-->/, '')
@@ -261,6 +269,7 @@ jobs:
       
       - name: Check if Fixes Applied
         id: check-fixes
+        if: steps.get-pr-info.outputs.skip != 'true' && steps.get-comments.outputs.skip != 'true'
         uses: actions/github-script@v7
         with:
           script: |
