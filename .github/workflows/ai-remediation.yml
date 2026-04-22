@@ -179,16 +179,16 @@ jobs:
             
             console.log(`Found ${comments.length} review comments`);
             
-            // ✅ 匹配 reviewdog 发布的评论（不限定特定 marker）
+            // ✅ 过滤 bot 发布的代码行评论（不限定 marker 格式）
             const reviewComments = comments
               .filter(c => c.user.login === 'github-actions[bot]')
-              .filter(c => c.body.includes('[claude-review]') || c.body.includes('[qwen-review]'))
+              .filter(c => c.path && c.line)
               .map(c => {
                 // 清理评论 body，提取问题描述
                 const body = c.body
-                  .replace(/\*\*\[claude-review\]\*\*.*?<br>/, '')
-                  .replace(/\*\*\[qwen-review\]\*\*.*?<br>/, '')
+                  .replace(/\*\*\[.*?\]\*\*.*?<br>/, '')
                   .replace(/<sub>.*?<\/sub>/, '')
+                  .replace(/<details>.*?<\/details>/gs, '')
                   .replace(/<!--.*?-->/, '')
                   .trim()
                   .split('\n')[0];
