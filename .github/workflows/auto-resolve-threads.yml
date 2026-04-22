@@ -107,9 +107,8 @@ jobs:
             let resolvedCount = 0;
             let skippedCount = 0;
 
-            // 使用 GraphQL 获取每个 comment 的 databaseId（用于 resolve）
             // 先筛选出纯 bot thread
-            const botThreads = [];
+            const botThreadRoots = [];
             for (const [threadId, threadComments] of Object.entries(threads)) {
               const hasHumanParticipation = threadComments.some(c => {
                 return c.user.login !== 'github-actions[bot]';
@@ -126,37 +125,75 @@ jobs:
               }
 
               const rootComment = threadComments.find(c => c.id === parseInt(threadId)) || threadComments[0];
-              console.log(`Thread ${threadId}: 📝 File: ${rootComment.path}, Line: ${rootComment.line} (bot-only)`);
-              botThreads.push({ rootComment });
+              console.log(`Thread ${threadId}: 📝 File: ${rootComment.path}, Line: ${rootComment.line ?? 'null'} (bot-only)`);
+              botThreadRoots.push(rootComment);
             }
 
-            // 使用 GitHub GraphQL API 解析 comment 的 node id
-            if (botThreads.length > 0) {
-              // 批量获取 comment 的 node id
-              const commentIds = botThreads.map(t => t.rootComment.id).join(' ');
+            // 通过 GraphQL 查询每个 comment 对应的 thread node ID
+            // GitHub REST API 没有直接的 resolve 端点
+            // 使用 GraphQL resolveReviewThread mutation 需要 thread 的 node ID（不是 comment 的 node ID）
+            if (botThreadRoots.length > 0) {
+              // 查询 PR 的 review threads，获取 thread node IDs
+              const { repository: { pullRequest } } = await github.graphql(`
+                query($owner: String!, $repo: String!, $number: Int!) {
+                  repository(owner: $owner, name: $repo) {
+                    pullRequest(number: $number) {
+                      reviewThreads(first: 100) {
+                        nodes {
+                          id
+                          comments(first: 10) {
+                            nodes {
+                              databaseId
+                              url
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              `, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                number: prNumber
+              });
 
-              // 用 REST API 的 comment ID 直接构造 GraphQL mutation
-              // GitHub REST API 没有直接的 resolve 端点，需要用 GraphQL
-              for (const { rootComment } of botThreads) {
+              // 建立 comment databaseId -> thread node ID 的映射
+              const commentToThread = {};
+              for (const thread of pullRequest.reviewThreads.nodes) {
+                for (const comment of thread.comments.nodes) {
+                  commentToThread[comment.databaseId] = thread.id;
+                }
+              }
+
+              // 尝试 resolve 每个 bot thread
+              for (const rootComment of botThreadRoots) {
+                const threadId = commentToThread[rootComment.id];
+                if (!threadId) {
+                  console.log(`  ⚠️  Could not find thread for comment #${rootComment.id}`);
+                  continue;
+                }
+
                 try {
-                  // 通过 GraphQL resolveReviewThread mutation
                   await github.graphql(`
-                    mutation {
-                      resolveReviewThread(input: {
-                        threadId: "${rootComment.node_id}",
-                        clientMutationId: "auto-resolve-${rootComment.id}"
-                      }) {
+                    mutation($input: ResolveReviewThreadInput!) {
+                      resolveReviewThread(input: $input) {
                         thread {
                           id
                           isResolved
                         }
                       }
                     }
-                  `);
-                  console.log(`  ✅ Resolved comment #${rootComment.id}`);
+                  `, {
+                    input: {
+                      threadId: threadId,
+                      clientMutationId: `auto-resolve-${rootComment.id}`
+                    }
+                  });
+                  console.log(`  ✅ Resolved thread for comment #${rootComment.id}`);
                   resolvedCount++;
                 } catch (error) {
-                  console.log(`  ⚠️  Failed to resolve #${rootComment.id}: ${error.message}`);
+                  console.log(`  ⚠️  Failed to resolve comment #${rootComment.id}: ${error.message}`);
                 }
               }
             }
