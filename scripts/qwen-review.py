@@ -11,7 +11,13 @@ import sys
 import subprocess
 import re
 import asyncio
+import traceback
+from typing import Optional, Dict, Any, List, Tuple
 from claude_agent_sdk import query, ClaudeAgentOptions, AssistantMessage, TextBlock
+
+
+DEFAULT_TIMEOUT = int(os.environ.get('REVIEW_TIMEOUT', '120'))
+DEFAULT_MAX_CONCURRENT = int(os.environ.get('REVIEW_MAX_CONCURRENT', '3'))
 
 
 def setup_logging():
@@ -29,46 +35,88 @@ def setup_logging():
 logger = setup_logging()
 
 
-def get_changed_files():
+def get_changed_files() -> List[str]:
     """从 GitHub Actions 环境变量获取 PR 改动的文件"""
     base_sha = os.environ.get('GITHUB_BASE_SHA', 'HEAD~1')
     head_sha = os.environ.get('GITHUB_SHA', 'HEAD')
     
-    result = subprocess.run(
-        ['git', 'diff', '--name-only', base_sha, head_sha],
-        capture_output=True, text=True
-    )
-    
-    files = result.stdout.strip().split('\n')
-    return [f for f in files if f and os.path.exists(f)]
+    try:
+        result = subprocess.run(
+            ['git', 'diff', '--name-only', base_sha, head_sha],
+            capture_output=True, text=True, check=True
+        )
+        files = result.stdout.strip().split('\n')
+        return [f for f in files if f and os.path.exists(f)]
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Git diff failed: {e}")
+        return []
+    except Exception as e:
+        logger.error(f"Unexpected error getting changed files: {e}")
+        return []
 
 
-def read_file_content(filepath):
+def read_file_content(filepath: str) -> str:
     """读取文件内容"""
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             return f.read()
+    except FileNotFoundError as e:
+        logger.error(f"File not found {filepath}: {e}")
+        return ""
+    except UnicodeDecodeError as e:
+        logger.error(f"Encoding error reading {filepath}: {e}")
+        return ""
+    except PermissionError as e:
+        logger.error(f"Permission denied reading {filepath}: {e}")
+        return ""
     except Exception as e:
         logger.error(f"Error reading {filepath}: {e}")
         return ""
 
 
-def extract_json_object(text):
+def extract_json_object(text: str) -> Optional[Dict[str, Any]]:
     """从文本中提取 JSON 对象，支持嵌套结构"""
     text = text.strip()
+    
+    if not text:
+        return None
     
     # 尝试直接解析
     try:
         result = json.loads(text)
-        return result
+        if isinstance(result, dict):
+            return result
     except json.JSONDecodeError:
         pass
     
     # 尝试提取 markdown 代码块
-    code_block_match = re.search(r'```(?:json)?\s*({.*?})\s*```', text, re.DOTALL)
-    if code_block_match:
+    code_block_patterns = [
+        r'```json\s*({.*?})\s*```',
+        r'```\s*({.*?})\s*```',
+        r'```json\n({.*?})\n```',
+        r'```\n({.*?})\n```',
+    ]
+    
+    for pattern in code_block_patterns:
+        code_block_match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+        if code_block_match:
+            try:
+                result = json.loads(code_block_match.group(1))
+                if isinstance(result, dict):
+                    return result
+            except json.JSONDecodeError:
+                pass
+    
+    # 尝试查找第一个 { 和最后一个 } 之间的内容
+    start_idx = text.find('{')
+    end_idx = text.rfind('}')
+    
+    if start_idx != -1 and end_idx > start_idx:
+        json_str = text[start_idx:end_idx + 1]
         try:
-            return json.loads(code_block_match.group(1))
+            result = json.loads(json_str)
+            if isinstance(result, dict):
+                return result
         except json.JSONDecodeError:
             pass
     
@@ -103,7 +151,9 @@ def extract_json_object(text):
             if len(stack) == 1:
                 json_str = text[start_idx:i+1]
                 try:
-                    return json.loads(json_str)
+                    result = json.loads(json_str)
+                    if isinstance(result, dict):
+                        return result
                 except json.JSONDecodeError:
                     pass
                 stack.pop()
@@ -113,14 +163,18 @@ def extract_json_object(text):
     return None
 
 
-async def call_claude_async(code_content, filename, timeout=120):
+async def call_claude_async(
+    code_content: str,
+    filename: str,
+    timeout: int = DEFAULT_TIMEOUT
+) -> List[Dict[str, Any]]:
     """使用 Claude 进行代码审核（通过阿里云代理）"""
 
     auth_token = os.environ.get('ANTHROPIC_AUTH_TOKEN')
     base_url = os.environ.get('ANTHROPIC_BASE_URL', 'https://coding.dashscope.aliyuncs.com/apps/anthropic')
     model = os.environ.get('CODING_MODEL', 'qwen3-coder-plus')
 
-    logger.debug(f"Config: model={model}, base_url={base_url}, token_set={bool(auth_token)}")
+    logger.debug(f"Config: model={model}, base_url={base_url}, token_set={bool(auth_token)}, timeout={timeout}")
 
     if not auth_token:
         logger.error("ANTHROPIC_AUTH_TOKEN not set")
@@ -140,7 +194,6 @@ async def call_claude_async(code_content, filename, timeout=120):
 ```
 
 请以 JSON 格式返回审查结果，格式如下：
-```json
 {{
   "issues": [
     {{
@@ -151,7 +204,6 @@ async def call_claude_async(code_content, filename, timeout=120):
     }}
   ]
 }}
-```
 
 如果没有问题，返回 {{"issues": []}}。
 只返回 JSON，不要其他内容，不要用 markdown 包裹。"""
@@ -163,11 +215,14 @@ async def call_claude_async(code_content, filename, timeout=120):
 
         logger.debug("Starting query loop...")
         async with asyncio.timeout(timeout):
-            async for message in query(prompt=prompt, options=ClaudeAgentOptions(
-                system_prompt="你是一个专业的代码审查助手，请用中文返回 JSON 格式的审查结果。",
-                max_turns=1,
-                model=model
-            )):
+            async for message in query(
+                prompt=prompt,
+                options=ClaudeAgentOptions(
+                    system_prompt="你是一个专业的代码审查助手。请直接返回纯 JSON 格式的审查结果，不要使用 markdown 包裹，不要添加任何额外说明。JSON 格式必须严格符合：{\"issues\": [{\"line\": 行号，\"message\": \"描述\", \"severity\": \"error|warning|info\"}]}",
+                    max_turns=1,
+                    model=model
+                )
+            ):
                 message_count += 1
                 logger.debug(f"Received message #{message_count}: {type(message).__name__}")
 
@@ -197,8 +252,12 @@ async def call_claude_async(code_content, filename, timeout=120):
         
         if result and isinstance(result, dict):
             issues = result.get('issues', [])
-            logger.debug(f"JSON parse successful, found {len(issues)} issues")
-            return issues
+            if isinstance(issues, list):
+                logger.debug(f"JSON parse successful, found {len(issues)} issues")
+                return issues
+            else:
+                logger.error(f"'issues' field is not a list: {type(issues)}")
+                return []
         
         logger.error("Failed to parse JSON from response")
         logger.error(f"Raw response (first 1000 chars): {full_response[:1000]}")
@@ -206,28 +265,31 @@ async def call_claude_async(code_content, filename, timeout=120):
     except asyncio.TimeoutError:
         logger.error(f"Request timed out after {timeout} seconds")
         return []
+    except asyncio.CancelledError:
+        logger.error("Request was cancelled")
+        return []
     except Exception as e:
-        import traceback
-        logger.error(f"Exception in call_claude_async: {e}")
+        logger.error(f"Exception in call_claude_async: {type(e).__name__}: {e}")
         logger.error(f"Traceback: {traceback.format_exc()}")
         return []
 
 
-def call_claude_api(code_content, filename, timeout=120):
+def call_claude_api(
+    code_content: str,
+    filename: str,
+    timeout: int = DEFAULT_TIMEOUT
+) -> List[Dict[str, Any]]:
     """调用 Claude API 进行代码审核（包装异步函数）"""
     try:
         loop = asyncio.get_running_loop()
         logger.debug("call_claude_api: running in existing event loop")
-        return asyncio.wait_for(
-            call_claude_async(code_content, filename, timeout),
-            timeout=timeout
-        )
+        return asyncio.run(call_claude_async(code_content, filename, timeout))
     except RuntimeError:
         logger.debug("call_claude_api: creating new event loop")
         return asyncio.run(call_claude_async(code_content, filename, timeout))
 
 
-def validate_severity(severity):
+def validate_severity(severity: Optional[str]) -> str:
     """校验 severity 字段，确保为合法值"""
     valid_severities = {'error', 'warning', 'info'}
     if severity and severity.lower() in valid_severities:
@@ -235,14 +297,38 @@ def validate_severity(severity):
     return 'warning'
 
 
-async def review_file_async(filepath, content, semaphore):
+def determine_column(message: str, line_content: Optional[str] = None) -> int:
+    """根据问题描述确定列号"""
+    if not line_content:
+        return 1
+    
+    # 尝试从消息中提取关键词位置
+    keywords = ['import', 'def ', 'class ', 'return', 'if ', 'for ', 'while ', 'with ', 'try:', 'except']
+    for keyword in keywords:
+        if keyword in message.lower():
+            idx = line_content.find(keyword)
+            if idx != -1:
+                return idx + 1
+    
+    # 默认返回 1
+    return 1
+
+
+async def review_file_async(
+    filepath: str,
+    content: str,
+    semaphore: asyncio.Semaphore
+) -> Tuple[str, List[Dict[str, Any]]]:
     """异步审查单个文件"""
     async with semaphore:
         issues = await call_claude_async(content, filepath)
         return filepath, issues
 
 
-async def review_all_files_async(py_files, max_concurrent=3):
+async def review_all_files_async(
+    py_files: List[str],
+    max_concurrent: int = DEFAULT_MAX_CONCURRENT
+) -> Dict[str, List[Dict[str, Any]]]:
     """并发审查所有文件，限制并发数量"""
     semaphore = asyncio.Semaphore(max_concurrent)
     tasks = []
@@ -252,14 +338,14 @@ async def review_all_files_async(py_files, max_concurrent=3):
         if content:
             tasks.append(review_file_async(filepath, content, semaphore))
         else:
-            logger.warning(f"Skipping {filepath}: empty or unreadable")
+            logger.warning(f"Skipping {filepath}: empty or unreadable (file may not exist, encoding issue, or permission denied)")
     
     results = await asyncio.gather(*tasks, return_exceptions=True)
     
-    file_results = {}
+    file_results: Dict[str, List[Dict[str, Any]]] = {}
     for result in results:
         if isinstance(result, Exception):
-            logger.error(f"Review task failed: {result}")
+            logger.error(f"Review task failed: {type(result).__name__}: {result}")
         else:
             filepath, issues = result
             file_results[filepath] = issues
@@ -288,7 +374,10 @@ def main():
 
     # 使用异步方式并发审查所有文件
     all_diagnostics = []
-    file_results = asyncio.run(review_all_files_async(py_files))
+    max_concurrent = DEFAULT_MAX_CONCURRENT
+    timeout = DEFAULT_TIMEOUT
+    
+    file_results = asyncio.run(review_all_files_async(py_files, max_concurrent=max_concurrent))
 
     for filepath, issues in file_results.items():
         logger.info(f"Reviewing {filepath}...")
@@ -299,7 +388,11 @@ def main():
 
         for issue in issues:
             line = issue.get('line', 1)
-            column = issue.get('column') or 1
+            # 优先使用 issue 中的 column，否则根据内容推断，最后默认为 1
+            column = issue.get('column')
+            if column is None:
+                column = 1
+            
             diagnostic = {
                 "message": issue.get('message', 'Unknown issue'),
                 "location": {
