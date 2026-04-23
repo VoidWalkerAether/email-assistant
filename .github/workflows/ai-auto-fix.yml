@@ -1,0 +1,191 @@
+name: AI Auto-Remediation
+
+on:
+  workflow_run:
+    workflows: ["Claude AI Code Review"]
+    types:
+      - completed
+
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Pull Request number to fix'
+        required: true
+        default: ''
+
+permissions:
+  pull-requests: write
+  contents: write
+
+jobs:
+  auto-fix:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Get PR Info
+        id: get-pr-info
+        uses: actions/github-script@v7
+        with:
+          script: |
+            let prNumber = null;
+            let branchName = null;
+
+            if (context.eventName === 'workflow_run') {
+              const headBranch = context.payload.workflow_run.head_branch;
+              const conclusion = context.payload.workflow_run.conclusion;
+
+              console.log(`Triggered by workflow_run (${conclusion})`);
+              console.log(`Head Branch: ${headBranch}`);
+
+              if (headBranch === 'main' || !headBranch) {
+                console.log('Skipping: main branch');
+                core.setOutput('skip', 'true');
+                return;
+              }
+
+              if (conclusion !== 'success') {
+                core.setOutput('skip', 'true');
+                return;
+              }
+
+              branchName = headBranch;
+
+              try {
+                const { data: r } = await github.rest.search.issuesAndPullRequests({
+                  q: `repo:${context.repo.owner}/${context.repo.repo} type:pr state:open head:${headBranch}`,
+                  per_page: 1
+                });
+                if (r.total_count > 0) {
+                  prNumber = r.items[0].number;
+                  console.log(`Found PR #${prNumber}`);
+                }
+              } catch (e) {
+                console.log('Search error: ' + e.message);
+              }
+
+              if (!prNumber) {
+                core.setOutput('skip', 'true');
+                return;
+              }
+            }
+            else if (context.eventName === 'workflow_dispatch') {
+              prNumber = parseInt(context.payload.inputs.pr_number);
+            }
+
+            core.setOutput('pr_number', prNumber);
+            core.setOutput('branch', branchName);
+            core.setOutput('skip', 'false');
+
+      - name: Checkout PR Branch
+        if: steps.get-pr-info.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.get-pr-info.outputs.branch }}
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install SDK
+        run: pip install claude-agent-sdk
+
+      - name: Fetch review comments
+        id: get-comments
+        if: steps.get-pr-info.outputs.skip != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = parseInt('${{ steps.get-pr-info.outputs.pr_number }}');
+            console.log(`Fetching review comments for PR #${prNumber}`);
+
+            const { data: comments } = await github.rest.pulls.listReviewComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+
+            console.log(`Total review comments: ${comments.length}`);
+
+            // Filter by [claude-review] marker
+            const reviewComments = comments
+              .filter(c => c.body && c.body.includes('[claude-review]'))
+              .map(c => ({
+                location: {
+                  path: c.path,
+                  range: { start: { line: c.line } }
+                },
+                message: c.body.trim().split('\n')[0],
+                severity: 'warning'
+              }));
+
+            console.log(`[claude-review] comments: ${reviewComments.length}`);
+
+            core.setOutput('comments', JSON.stringify(reviewComments));
+            core.setOutput('count', reviewComments.length);
+
+      - name: Check if issues found
+        id: check-issues
+        if: steps.get-pr-info.outputs.skip != 'true'
+        env:
+          COUNT: ${{ steps.get-comments.outputs.count }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const count = parseInt(process.env.COUNT || '0');
+            if (count === 0) {
+              console.log('No [claude-review] comments, skipping auto-fix');
+              core.setOutput('skip', 'true');
+            } else {
+              console.log(`Found ${count} issues to fix`);
+              core.setOutput('skip', 'false');
+            }
+
+      - name: Run AI Auto-Fix
+        if: steps.check-issues.outputs.skip != 'true'
+        id: auto-fix
+        continue-on-error: true
+        env:
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL || 'https://coding.dashscope.aliyuncs.com/apps/anthropic' }}
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'qwen3.5-plus' }}
+          REVIEW_COMMENTS: ${{ steps.get-comments.outputs.comments }}
+        run: |
+          python3 scripts/auto-fix.py > auto-fix-result.json 2>&1 || true
+          cat auto-fix-result.json 2>/dev/null || echo '{"success": false}' > auto-fix-result.json
+
+      - name: Check if Fixes Applied
+        id: check-fixes
+        if: steps.get-pr-info.outputs.skip != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            try {
+              const content = fs.readFileSync('auto-fix-result.json', 'utf8').trim();
+              const result = JSON.parse(content);
+              if (result.success && result.fixed_files && result.fixed_files.length > 0) {
+                core.setOutput('has_fixes', 'true');
+                core.setOutput('fixed_files', result.fixed_files.join(', '));
+              } else {
+                core.setOutput('has_fixes', 'false');
+              }
+            } catch (e) {
+              core.setOutput('has_fixes', 'false');
+            }
+
+      - name: Commit and Push Fixes
+        if: steps.check-fixes.outputs.has_fixes == 'true'
+        env:
+          TARGET_BRANCH: ${{ steps.get-pr-info.outputs.branch }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --staged --quiet; then
+            echo "No changes"
+            exit 0
+          fi
+          git commit -m "AI auto-fix"
+          git push origin HEAD:$TARGET_BRANCH
