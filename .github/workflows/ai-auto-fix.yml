@@ -152,7 +152,7 @@ jobs:
           ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'qwen3.5-plus' }}
           REVIEW_COMMENTS: ${{ steps.get-comments.outputs.comments }}
         run: |
-          python3 scripts/auto-fix.py > auto-fix-result.json 2>&1 || true
+          python3 scripts/auto-fix.py > auto-fix-result.json || true
           cat auto-fix-result.json 2>/dev/null || echo '{"success": false}' > auto-fix-result.json
 
       - name: Check if Fixes Applied
