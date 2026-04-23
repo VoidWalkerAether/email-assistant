@@ -141,15 +141,25 @@ jobs:
               repo: context.repo.repo,
               ref: 'heads/main'
             });
+            const mainCommitSha = ref.object.sha;
             await github.rest.git.createRef({
               owner: context.repo.owner,
               repo: context.repo.repo,
               ref: `refs/heads/${branchName}`,
-              sha: ref.object.sha
+              sha: mainCommitSha
             });
-            console.log(`Created branch ${branchName}`);
+            console.log(`Created branch ${branchName} from ${mainCommitSha.slice(0, 7)}`);
 
-            // Commit the test file
+            // Get the tree SHA from the latest commit on main
+            const { data: latestCommit } = await github.rest.git.getCommit({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: mainCommitSha
+            });
+            const mainTreeSha = latestCommit.tree.sha;
+            console.log(`Main tree SHA: ${mainTreeSha}`);
+
+            // Create blob for the test file
             const fileContent = fs.readFileSync(testFile, 'utf8');
             const { data: blob } = await github.rest.git.createBlob({
               owner: context.repo.owner,
@@ -158,10 +168,11 @@ jobs:
               encoding: 'base64'
             });
 
-            await github.rest.git.createTree({
+            // Create new tree with the test file added
+            const { data: newTree } = await github.rest.git.createTree({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              base_tree: ref.object.sha,
+              base_tree: mainTreeSha,
               tree: [{
                 path: testFile,
                 mode: '100644',
@@ -170,27 +181,23 @@ jobs:
               }]
             });
 
-            // Push commit
+            // Create commit
             const { data: newCommit } = await github.rest.git.createCommit({
               owner: context.repo.owner,
               repo: context.repo.repo,
               message: `test: add regression test for issue #${issueNumber}\n\n${issueTitle}`,
-              tree: (await github.rest.git.getTree({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                tree_sha: ref.object.sha,
-                recursive: true
-              })).data.sha,
-              parents: [ref.object.sha]
+              tree: newTree.sha,
+              parents: [mainCommitSha]
             });
+            console.log(`Created commit ${newCommit.sha.slice(0, 7)}`);
 
+            // Update branch to point to new commit
             await github.rest.git.updateRef({
               owner: context.repo.owner,
               repo: context.repo.repo,
               ref: `heads/${branchName}`,
               sha: newCommit.sha
             });
-            console.log(`Pushed commit to ${branchName}`);
 
             // Create PR
             const { data: pr } = await github.rest.pulls.create({
