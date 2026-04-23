@@ -56,7 +56,8 @@ async def call_ai_for_test(issue_info, source_code):
 要求：
 1. 生成一个 pytest 测试函数，放在 tests/test_regression_{issue_info['issue_number']}.py 中
 2. 测试必须使用 assert 验证期望行为
-3. 如果 bug 涉及 email_utils 中的函数，需要 import 它们（sys.path 已配置）
+3. import 模块时，受影响的文件路径如 src/email_utils.py，应去掉 src. 前缀，直接 import email_utils（已有 sys.path 配置）
+   示例：from email_utils import parse_email_list
 4. 测试函数名要有描述性，如 test_parse_email_list_handles_space_separated_emails
 5. 只返回 Python 测试代码，不要解释
 6. 代码中必须包含必要的 import（sys, os 用于设置 sys.path，以及测试目标模块的 import）
