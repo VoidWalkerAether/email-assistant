@@ -164,15 +164,20 @@ jobs:
             const fs = require('fs');
             try {
               const content = fs.readFileSync('auto-fix-result.json', 'utf8').trim();
+              console.log('auto-fix-result.json content:', content);
               const result = JSON.parse(content);
+              console.log('parsed result:', JSON.stringify(result));
               if (result.success && result.fixed_files && result.fixed_files.length > 0) {
                 core.setOutput('has_fixes', 'true');
                 core.setOutput('fixed_files', result.fixed_files.join(', '));
+                console.log('has_fixes set to: true');
               } else {
                 core.setOutput('has_fixes', 'false');
+                console.log('has_fixes set to: false (condition not met)');
               }
             } catch (e) {
               core.setOutput('has_fixes', 'false');
+              console.log('has_fixes set to: false (exception):', e.message);
             }
 
       - name: Commit and Push Fixes
