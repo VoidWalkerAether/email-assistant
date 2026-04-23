@@ -51,6 +51,49 @@ jobs:
       - name: Install SDK
         run: pip install claude-agent-sdk
 
+      - name: Parse Issue Body
+        if: steps.check-dedup.outputs.skip != 'true'
+        id: parse
+        uses: actions/github-script@v7
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+        with:
+          script: |
+            const body = process.env.ISSUE_BODY || '';
+            const lines = body.split('\n');
+
+            function extractField(startMarker, endMarkers) {
+              let start = -1;
+              for (let i = 0; i < lines.length; i++) {
+                if (lines[i].includes(startMarker)) { start = i; break; }
+              }
+              if (start === -1) return '';
+              let end = lines.length;
+              for (const m of endMarkers) {
+                for (let i = start + 1; i < lines.length; i++) {
+                  if (lines[i].includes(m)) { end = i; break; }
+                }
+                if (end < lines.length) break;
+              }
+              return lines.slice(start + 1, end).join('\n').trim();
+            }
+
+            const affectedFile = extractField('受影响的文件', ['## 缺陷描述', '##']);
+            const bugDescription = extractField('缺陷描述', ['## 复现步骤', '##']);
+            const reproductionSteps = extractField('复现步骤', ['## 期望行为', '##']);
+            const expectedBehavior = extractField('期望行为', ['##']);
+
+            console.log('Affected file:', affectedFile);
+            console.log('Bug description:', bugDescription);
+
+            core.setOutput('issue_number', context.payload.issue.number);
+            core.setOutput('issue_title', process.env.ISSUE_TITLE);
+            core.setOutput('affected_file', affectedFile);
+            core.setOutput('bug_description', bugDescription);
+            core.setOutput('reproduction_steps', reproductionSteps);
+            core.setOutput('expected_behavior', expectedBehavior);
+
       - name: Generate Test Case
         if: steps.check-dedup.outputs.skip != 'true'
         id: generate
@@ -58,13 +101,12 @@ jobs:
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
           ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL || 'https://coding.dashscope.aliyuncs.com/apps/anthropic' }}
           ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'qwen3.5-plus' }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          ISSUE_TITLE: ${{ github.event.issue.title }}
-          ISSUE_BODY: ${{ github.event.issue.body }}
-          AFFECTED_FILE: ${{ github.event.issue.body }}
-          BUG_DESCRIPTION: ${{ github.event.issue.body }}
-          REPRODUCTION_STEPS: ${{ github.event.issue.body }}
-          EXPECTED_BEHAVIOR: ${{ github.event.issue.body }}
+          ISSUE_NUMBER: ${{ steps.parse.outputs.issue_number }}
+          ISSUE_TITLE: ${{ steps.parse.outputs.issue_title }}
+          AFFECTED_FILE: ${{ steps.parse.outputs.affected_file }}
+          BUG_DESCRIPTION: ${{ steps.parse.outputs.bug_description }}
+          REPRODUCTION_STEPS: ${{ steps.parse.outputs.reproduction_steps }}
+          EXPECTED_BEHAVIOR: ${{ steps.parse.outputs.expected_behavior }}
         run: |
           python3 scripts/harness-gap.py > harness-gap-result.json || true
           cat harness-gap-result.json 2>/dev/null || echo '{"success": false}' > harness-gap-result.json
