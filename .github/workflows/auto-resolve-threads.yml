@@ -41,10 +41,18 @@ jobs:
             else if (context.eventName === 'workflow_run') {
               const headBranch = context.payload.workflow_run.head_branch;
               const conclusion = context.payload.workflow_run.conclusion;
-              branchName = headBranch;
 
               console.log(`Triggered by workflow_run (${conclusion})`);
               console.log(`Head Branch: ${headBranch}`);
+
+              // ✅ 跳过 main 分支的 run（merge 后的 run 不应该是 auto-resolve 的目标）
+              if (headBranch === 'main' || !headBranch) {
+                console.log(`Skipping: head_branch is '${headBranch}', not a PR branch`);
+                core.setOutput('skip', 'true');
+                return;
+              }
+
+              branchName = headBranch;
 
               // 用 Search API 获取 PR 号
               try {
