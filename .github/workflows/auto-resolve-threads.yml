@@ -46,40 +46,23 @@ jobs:
               console.log(`Head Branch: ${headBranch}`);
 
               // ⚠️ 不依赖 head_branch 判断（workflow_run 可能从 default branch 读取 YAML，head_branch 不准确）
-              // 改用 Search API 查找 open PR 来确定真实分支
+              // Search API 不返回 head 分支信息，改用 pulls.list 获取完整 PR 对象
               try {
-                // 优先用 headBranch 搜索
-                if (headBranch && headBranch !== 'main') {
-                  branchName = headBranch;
-                  const { data: searchResult } = await github.rest.search.issuesAndPullRequests({
-                    q: `repo:${context.repo.owner}/${context.repo.repo} type:pr state:open head:${headBranch}`,
-                    per_page: 1
-                  });
-                  if (searchResult.total_count > 0) {
-                    prNumber = searchResult.items[0].number;
-                    console.log(`Found PR #${prNumber} via head:${headBranch}`);
-                  }
-                }
-                // headBranch 为 main 或没找到 PR 时，尝试搜索所有 open PR
-                if (!prNumber) {
-                  const { data: searchResult } = await github.rest.search.issuesAndPullRequests({
-                    q: `repo:${context.repo.owner}/${context.repo.repo} type:pr state:open`,
-                    sort: 'created',
-                    order: 'desc',
-                    per_page: 5
-                  });
-                  if (searchResult.total_count > 0 && searchResult.items.length > 0) {
-                    // 只取有 head 属性的 PR（搜索可能返回普通 issue）
-                    const prItem = searchResult.items.find(item => item.head && item.head.ref);
-                    if (prItem) {
-                      prNumber = prItem.number;
-                      branchName = prItem.head.ref;
-                      console.log(`Found PR #${prNumber} (fallback search), branch: ${branchName}`);
-                    }
-                  }
+                const { data: prs } = await github.rest.pulls.list({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  state: 'open',
+                  sort: 'created',
+                  direction: 'desc',
+                  per_page: 5
+                });
+                if (prs.length > 0) {
+                  prNumber = prs[0].number;
+                  branchName = prs[0].head.ref;
+                  console.log(`Found PR #${prNumber}, branch: ${branchName}`);
                 }
               } catch (error) {
-                console.log(`Search API failed: ${error.message}`);
+                console.log(`PR list API failed: ${error.message}`);
               }
 
               if (!prNumber) {
