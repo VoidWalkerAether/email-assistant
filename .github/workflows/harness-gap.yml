@@ -22,6 +22,21 @@ jobs:
           script: |
             const issueNumber = context.payload.issue.number;
             const marker = `<!-- harness-gap-handled -->`;
+
+            // Check for existing PR from harness-gap bot
+            const { data: prs } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              head: `${context.repo.owner}:harness-gap/issue-${issueNumber}`
+            });
+            if (prs.length > 0) {
+              console.log(`Existing PR #${prs[0].number} found, skipping`);
+              core.setOutput('skip', 'true');
+              return;
+            }
+
+            // Check for marker comment
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -135,7 +150,17 @@ jobs:
             const issueTitle = process.env.ISSUE_TITLE;
             const branchName = `harness-gap/issue-${issueNumber}`;
 
-            // Create branch
+            // Create branch (delete existing if any)
+            try {
+              await github.rest.git.deleteRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `heads/${branchName}`
+              });
+              console.log(`Deleted existing branch ${branchName}`);
+            } catch (e) {
+              // Branch doesn't exist yet, that's fine
+            }
             const { data: ref } = await github.rest.git.getRef({
               owner: context.repo.owner,
               repo: context.repo.repo,
