@@ -157,22 +157,7 @@ jobs:
               title: `[harness-gap] Add regression test for issue #${issueNumber}`,
               head: branchName,
               base: 'main',
-              body: `## Harness Gap: Issue #${issueNumber}
-
-自动生成的回归测试，用于复现 issue #${issueNumber} 中描述的缺陷。
-
-### Issue 描述
-${issueTitle}
-
-### 复现步骤
-（详见 issue #${issueNumber}）
-
-### 生成的测试文件
-- \`${testFile}\`
-
----
-<!-- harness-gap-auto-pr -->
-`
+              body: `## Harness Gap: Issue #${issueNumber}\n\n自动生成的回归测试，用于复现 issue #${issueNumber} 中描述的缺陷。\n\n### Issue 描述\n${issueTitle}\n\n### 复现步骤\n（详见 issue #${issueNumber}）\n\n### 生成的测试文件\n- \`${testFile}\`\n\n---\n<!-- harness-gap-auto-pr -->`
             });
             console.log(`Created PR #${pr.number}`);
 
