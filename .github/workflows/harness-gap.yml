@@ -47,7 +47,7 @@ jobs:
             if (markerComment) {
               // Check if the PR referenced in the marker is still open
               // If not, allow re-run
-              const existingPRs = await github.rest.pulls.list({
+              const { data: existingPRs } = await github.rest.pulls.list({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 state: 'all',
