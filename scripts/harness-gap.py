@@ -64,9 +64,22 @@ async def call_ai_for_test(issue_info, source_code):
    from email_utils import 函数名
    ```
    注意：sys.path 指向 '..' + 'src' 子目录，import 时不带 src. 前缀
-4. 测试函数名要有描述性，如 test_parse_email_list_handles_space_separated_emails
-5. 只返回 Python 测试代码，不要解释
-6. 不需要 main() 或 if __name__ 块，pytest 会自动发现测试
+4. **重要**：受影响的文件可能不在 main 分支上。测试文件必须在 import 失败时 fallback 到内联定义。
+   示例结构：
+   ```python
+   import sys, os
+   sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+   try:
+       from email_utils import parse_email_list
+   except ImportError:
+       # main 上没有此模块，内联一个复现 bug 的函数定义
+       def parse_email_list(raw_text):
+           import re
+           return re.split('[，\\n]', raw_text)
+   ```
+5. 测试函数名要有描述性，如 test_parse_email_list_handles_space_separated_emails
+6. 只返回 Python 测试代码，不要解释
+7. 不需要 main() 或 if __name__ 块，pytest 会自动发现测试
 
 测试代码："""
 
