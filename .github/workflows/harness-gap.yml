@@ -36,18 +36,32 @@ jobs:
               return;
             }
 
-            // Check for marker comment
+            // Check for marker comment (only skip if PR is still open)
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: issueNumber,
               per_page: 50
             });
-            const alreadyHandled = comments.some(c => c.body.includes(marker));
-            if (alreadyHandled) {
-              console.log('Issue already handled, skipping');
-              core.setOutput('skip', 'true');
-              return;
+            const markerComment = comments.find(c => c.body.includes('<!-- harness-gap-handled -->'));
+            if (markerComment) {
+              // Check if the PR referenced in the marker is still open
+              // If not, allow re-run
+              const existingPRs = await github.rest.pulls.list({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'all',
+                head: `${context.repo.owner}:harness-gap/issue-${issueNumber}`
+              });
+              const hasOpenOrMergedPR = existingPRs.some(pr =>
+                pr.state === 'open' || pr.state === 'closed' && pr.merged_at !== null
+              );
+              if (hasOpenOrMergedPR) {
+                console.log('Issue already handled (PR still open or merged), skipping');
+                core.setOutput('skip', 'true');
+                return;
+              }
+              console.log('Previous PR is closed, allowing re-run');
             }
             core.setOutput('skip', 'false');
 
