@@ -185,7 +185,7 @@ async def call_claude_async(
 
     auth_token = os.environ.get('ANTHROPIC_AUTH_TOKEN')
     base_url = os.environ.get('ANTHROPIC_BASE_URL', 'https://coding.dashscope.aliyuncs.com/apps/anthropic')
-    model = os.environ.get('CODING_MODEL', 'claude-sonnet-4-20250514')
+    model = os.environ.get('ANTHROPIC_MODEL') or os.environ.get('CODING_MODEL', 'qwen3-coder-plus')
 
     logger.debug(f"Config: model={model}, base_url={base_url}, token_set={bool(auth_token)}, timeout={timeout}")
 
